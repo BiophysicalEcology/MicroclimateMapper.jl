@@ -6,7 +6,7 @@ using Statistics: mean
 using Unitful
 
 using Microclimate
-using Microclimate: DEFAULT_DEPTHS, example_soil_moisture_model
+using Microclimate: DEFAULT_DEPTHS, example_soil_hydraulics
 using SolarRadiation
 using FluidProperties
 using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation, VPLookupTable
@@ -103,6 +103,16 @@ export
     HourlyTimeseries,
     # Simulation
     simulate_microclimate,
+    DEFAULT_DEPTHS,
+    example_soil_hydraulics,
+    # Microclimate formulation types (re-exported for user convenience)
+    NonConsecutiveDayMode,
+    ConsecutiveDayMode,
+    FixedSoilTemperatureIterations,
+    SoilTemperatureConvergenceTolerance,
+    PrescribedSoilMoisture,
+    DynamicSoilMoisture,
+    CampbellSoilHydraulics,
     # Grid simulation
     solar_radiation_grid,
     GridInitStrategy,

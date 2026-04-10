@@ -118,7 +118,7 @@ result = simulate_microclimate(
 
 # Quick inspection of outputs
 soil_T = result.soil_temperature          # Matrix (timesteps × depths) in K
-air_T  = [p.air_temperature for p in result.profile]  # per-height air temp
+air_T  = result.profile.air_temperature  # Matrix (timesteps × heights)
 @show size(soil_T)
 @show result.soil_temperature[1, :]      # first hour, all depths
 
@@ -214,9 +214,9 @@ let
     solar_nmr   = metout.SOLR .* 1u"W/m^2"
 
     # ---- Julia output matrices (ntimesteps × nheights) ----------------------
-    air_temperature_matrix = hcat([p.air_temperature for p in result.profile]...)'
-    humidity_matrix        = hcat([p.relative_humidity for p in result.profile]...)'
-    wind_matrix            = hcat([p.wind_speed for p in result.profile]...)'
+    air_temperature_matrix = result.profile.air_temperature   # (nsteps × nheights)
+    humidity_matrix        = result.profile.relative_humidity # (nsteps × nheights)
+    wind_matrix            = result.profile.wind_speed        # (nsteps × nheights)
 
     depths_labels = ["$(round(ustrip(u"cm", d); digits=1)) cm"
                      for d in [0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200]u"cm"]

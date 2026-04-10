@@ -1,15 +1,15 @@
-# Gridded microclimate across the Chamonix SRTM DEM using TerraClimate forcing (July 2000).
+# Gridded microclimate simulation using TerraClimate forcing.
 #
 # Pipeline:
 #   1. Download SRTM DEM (~100×100 pixels) and reproject to UTM
 #   2. Compute slope, aspect, horizon angles (Geomorphometry.jl)
-#   3. Download TerraClimate weather (year 2000) at center pixel; slice to July
+#   3. Download TerraClimate weather for the chosen year at center pixel; slice to chosen month
 #   4. Build lapse-corrected weather grid; run simulate_microclimate_grid
 #      (RowWarmStart init strategy, rows sequential, columns parallelised)
 #   5. Plot soil surface T, air T at 1 cm, soil T at 10 cm
 #      at 6 times of day: midnight, dawn, mid-morning, midday, mid-afternoon, dusk
 #
-# Each pixel runs a single July representative day (24 hours) with up to iterate_day=5
+# Each pixel runs a single representative day (24 hours) with up to iterate_day=5
 # passes, stopping early when the maximum nodal temperature change is below the
 # convergence tolerance.  The RowWarmStart strategy seeds each pixel from the
 # converged midnight soil-temperature profile of the pixel directly above it.
@@ -39,11 +39,15 @@ import Plots: heatmap, plot, savefig
 # Configuration
 # ============================================================================
 
-# Study area: above Chamonix, French Alps — same extent as grid_solar.jl
-center_lon = 6.87     # °E
-center_lat = 45.92    # °N
-extent_lat = 0.0833   # ~100 SRTM pixels N–S
-extent_lon = 0.120    # ~100 SRTM pixels E–W
+# Study area — change center_lon/center_lat and the label to move to a new location.
+# extent_lat/extent_lon control the N–S and E–W span (decimal degrees).
+# At mid-latitudes, 0.0833° lat ≈ 0.120° lon ≈ 100 SRTM pixels (~9 km).
+location_name = "Chamonix"
+center_lon    = 6.87     # °E
+center_lat    = 45.92    # °N
+extent_lat    = 0.0833   # ~100 SRTM pixels N–S
+extent_lon    = 0.120    # ~100 SRTM pixels E–W
+location_tag  = lowercase(replace(location_name, " " => "_"))
 
 region = Extent(
     X = (center_lon - extent_lon / 2, center_lon + extent_lon / 2),
@@ -51,8 +55,15 @@ region = Extent(
 )
 
 year             = 2000
-july             = 7          # month index
+month            = 7          # month to simulate (1 = January … 12 = December)
 n_horizon_angles = 32
+
+month_names = ["January","February","March","April","May","June",
+               "July","August","September","October","November","December"]
+month_tags  = ["jan","feb","mar","apr","may","jun",
+               "jul","aug","sep","oct","nov","dec"]
+month_name  = month_names[month]
+month_tag   = month_tags[month]
 
 depths  = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 heights = [0.01, 2.0]u"m"
@@ -92,10 +103,10 @@ terrain_grids = compute_terrain_grids(utm_dem; n_horizon_angles)
    horizons_u) = terrain_grids
 
 # ============================================================================
-# Step 7: TerraClimate weather — full year at center pixel, slice to July
+# Step 7: TerraClimate weather — full year at center pixel, slice to chosen month
 #
 # The full year is downloaded so that get_weather can compute the annual mean
-# air temperature for use as the deep soil boundary condition. The July slice
+# air temperature for use as the deep soil boundary condition. The monthly slice
 # carries this annual mean in deep_soil_temperature (same value every month).
 # ============================================================================
 
@@ -157,14 +168,14 @@ function extract_month(ws, m)
     ))
 end
 
-weather_july = extract_month(weather, july)
+weather_month = extract_month(weather, month)
 
 center_elev_m = round(ustrip(u"m",  center_elev_u); digits = 0)
-tmin_july_C   = round(ustrip(u"°C", weather_july.environment_minmax.reference_temperature_min[1]); digits = 1)
-tmax_july_C   = round(ustrip(u"°C", weather_july.environment_minmax.reference_temperature_max[1]); digits = 1)
-tdeep_C       = round(ustrip(u"°C", weather_july.environment_daily.deep_soil_temperature[1]);       digits = 1)
+tmin_C        = round(ustrip(u"°C", weather_month.environment_minmax.reference_temperature_min[1]); digits = 1)
+tmax_C        = round(ustrip(u"°C", weather_month.environment_minmax.reference_temperature_max[1]); digits = 1)
+tdeep_C       = round(ustrip(u"°C", weather_month.environment_daily.deep_soil_temperature[1]);       digits = 1)
 println("  Center elevation: $center_elev_m m")
-println("  July Tmin: $tmin_july_C °C,  Tmax: $tmax_july_C °C,  deep soil T: $tdeep_C °C")
+println("  $month_name Tmin: $tmin_C °C,  Tmax: $tmax_C °C,  deep soil T: $tdeep_C °C")
 
 # ============================================================================
 # Step 8: Shared soil model and lapse correction helper
@@ -181,7 +192,7 @@ soil_thermal_model = CampbelldeVriesSoilThermal(;
     return_flow_threshold = 0.162,
 )
 
-aerosol_optical_depth = get_aerosol_optical_depth(center_point, 0.01, july)
+aerosol_optical_depth = get_aerosol_optical_depth(center_point, 0.01, month)
 solar_model = SolarProblem(; aerosol_optical_depth)
 
 # Lapse-correct temperature and humidity for a given elevation difference (Δz = pixel − center).
@@ -230,7 +241,7 @@ for I in CartesianIndices((ny_utm, nx_utm))
     ri, rj = data_is_xy ? (j, i) : (i, j)
     elev   = elevation_m[ri, rj]
     ismissing(elev) && continue
-    wp_grid[i, j] = lapse_correct_weather(weather_july, elev - center_elev_u)
+    wp_grid[i, j] = lapse_correct_weather(weather_month, elev - center_elev_u)
 end
 
 grid_result = simulate_microclimate_grid(
@@ -277,7 +288,7 @@ function plot_variable(data4d, var_label, fname)
 
     display(plot(panels...; layout = (2, 3), size = (1400, 900),
         left_margin = 5Plots.mm,
-        plot_title = "$var_label — Chamonix, July $year"))
+        plot_title = "$var_label — $location_name, $month_name $year"))
     savefig(fname)
     println("  Saved $fname")
 end
@@ -295,7 +306,7 @@ function animate_variable(data4d, var_label, fname; framerate = 4)
     anim = @animate for k in 1:nframes
         heatmap(x_coords_utm, y_plt, ascending_y(y_coords_utm, data4d[:, :, k])[2];
             color = cgrad(:RdYlBu, rev = true), clims = clims,
-            title = "$var_label\n$(labels_here[k]) — Chamonix, July $year",
+            title = "$var_label\n$(labels_here[k]) — $location_name, $month_name $year",
             xlabel = "Easting (m)", ylabel = "Northing (m)",
             colorbar_title = "°C", aspect_ratio = :equal,
             titlefontsize = 9, size = (700, 600),
@@ -306,16 +317,16 @@ function animate_variable(data4d, var_label, fname; framerate = 4)
 end
 
 println("Plotting...")
-plot_variable(T_air2,   "Air temperature at 2 m (°C)",    "chamonix_july_Tair2m.png")
-plot_variable(T_air1,   "Air temperature at 1 cm (°C)",   "chamonix_july_Tair1cm.png")
-plot_variable(T_soil0,  "Soil surface temperature (°C)",  "chamonix_july_Tsoil0.png")
-plot_variable(T_soil10, "Soil temperature at 10 cm (°C)", "chamonix_july_Tsoil10cm.png")
+plot_variable(T_air2,   "Air temperature at 2 m (°C)",    "$(location_tag)_$(month_tag)$(year)_Tair2m.png")
+plot_variable(T_air1,   "Air temperature at 1 cm (°C)",   "$(location_tag)_$(month_tag)$(year)_Tair1cm.png")
+plot_variable(T_soil0,  "Soil surface temperature (°C)",  "$(location_tag)_$(month_tag)$(year)_Tsoil0.png")
+plot_variable(T_soil10, "Soil temperature at 10 cm (°C)", "$(location_tag)_$(month_tag)$(year)_Tsoil10cm.png")
 
 println("Animating...")
-animate_variable(T_air2,   "Air temperature at 2 m (°C)",    "chamonix_july_Tair2m.gif")
-animate_variable(T_air1,   "Air temperature at 1 cm (°C)",   "chamonix_july_Tair1cm.gif")
-animate_variable(T_soil0,  "Soil surface temperature (°C)",  "chamonix_july_Tsoil0.gif")
-animate_variable(T_soil10, "Soil temperature at 10 cm (°C)", "chamonix_july_Tsoil10cm.gif")
+animate_variable(T_air2,   "Air temperature at 2 m (°C)",    "$(location_tag)_$(month_tag)$(year)_Tair2m.gif")
+animate_variable(T_air1,   "Air temperature at 1 cm (°C)",   "$(location_tag)_$(month_tag)$(year)_Tair1cm.gif")
+animate_variable(T_soil0,  "Soil surface temperature (°C)",  "$(location_tag)_$(month_tag)$(year)_Tsoil0.gif")
+animate_variable(T_soil10, "Soil temperature at 10 cm (°C)", "$(location_tag)_$(month_tag)$(year)_Tsoil10cm.gif")
 
-println("\nDone. $(nx_utm)×$(ny_utm) pixel grid, July $year, " *
+println("\nDone. $(nx_utm)×$(ny_utm) pixel grid, $month_name $year, " *
         "$(nhours) time snapshots ($(join(snapshot_hours, ", ")) h).")

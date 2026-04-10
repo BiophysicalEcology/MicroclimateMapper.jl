@@ -330,7 +330,7 @@ function simulate_microclimate_grid(
                 end
                 for (ohi, rhi) in enumerate(hi)
                     air_out[i, j, k, ohi] =
-                        ustrip(u"°C", result.profile[s].air_temperature[rhi])
+                        ustrip(u"°C", result.profile.air_temperature[s, rhi])
                 end
             end
 

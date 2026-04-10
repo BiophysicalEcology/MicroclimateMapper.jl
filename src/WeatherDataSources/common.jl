@@ -123,8 +123,18 @@ function simulate_microclimate(
     end
 
     # Daily-mode: consecutive real days → inherit state, iterate once
-    is_daily     = environment_minmax isa DailyMinMaxEnvironment
-    _iterate_day = is_daily ? 1 : iterate_day
+    is_daily  = environment_minmax isa DailyMinMaxEnvironment
+    time_mode = is_daily ? ConsecutiveDayMode(; spinup_first_day=spinup) : NonConsecutiveDayMode()
+
+    # convergence strategy
+    convergence = if isnothing(convergence_tolerance)
+        FixedSoilTemperatureIterations(is_daily ? 1 : iterate_day)
+    else
+        SoilTemperatureConvergenceTolerance(;
+            tolerance             = convergence_tolerance,
+            max_iterations_per_day = is_daily ? 1 : iterate_day,
+        )
+    end
 
     # Build (ndepths × ndays) precomputed soil moisture matrix from monthly weather data.
     # Used by Microclimate.jl when runmoist=false to vary soil moisture per day.
@@ -136,6 +146,10 @@ function simulate_microclimate(
             repeat(sm', length(depths), 1)  # (ndepths × nmonths)
         end
     end
+
+    # soil moisture mode
+    moisture_mode = runmoist ? DynamicSoilMoisture() :
+                               PrescribedSoilMoisture(; precomputed_soil_moisture)
 
     if organic_soil_cap
         n = length(depths)
@@ -159,11 +173,12 @@ function simulate_microclimate(
 
     # Build default soil moisture model from soil thermal parameters if not provided
     if isnothing(soil_moisture_model)
-        soil_moisture_model = example_soil_moisture_model(
+        soil_moisture_model = example_soil_hydraulics(
             depths;
-            bulk_density = ustrip(u"Mg/m^3", soil_thermal_model.bulk_density),
+            bulk_density    = ustrip(u"Mg/m^3", soil_thermal_model.bulk_density),
             mineral_density = ustrip(u"Mg/m^3", soil_thermal_model.mineral_density),
-            root_density = fill(0.0, length(depths))u"m/m^3",
+            root_density    = fill(0.0, length(depths))u"m/m^3",
+            mode            = moisture_mode,
         )
     end
 
@@ -184,14 +199,10 @@ function simulate_microclimate(
         environment_minmax,
         environment_daily,
         environment_hourly,
-        iterate_day     = _iterate_day,
-        convergence_tolerance,
-        daily           = is_daily,
-        runmoist,
-        spinup,
+        time_mode,
+        convergence,
         initial_soil_temperature,
         initial_soil_moisture,
-        precomputed_soil_moisture,
         kwargs...,
     )
 
