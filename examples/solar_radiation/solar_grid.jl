@@ -1,8 +1,6 @@
 # Gridded solar radiation across a mountainous terrain using a downloaded SRTM DEM.
 #
-# Study area: Mont Blanc massif, Chamonix valley, French Alps (~100 × 100 pixels)
 # DEM source:  SRTM via RasterDataSources (CSI-CGIAR mirror, ~90 m / 3 arcsecond)
-# Day:         Summer solstice (day 172) — maximises north/south-facing contrast
 #
 # Pipeline:
 #   1. Download SRTM tile and crop to ~100 × 100 pixel study area
@@ -28,21 +26,22 @@ import Plots: heatmap, plot, savefig
 # Configuration
 # ============================================================================
 
-# Study area: above Chamonix, where the Aiguilles Rouges face Mont Blanc.
-# A ~100 × 100 pixel window at SRTM 3-arcsecond (~90 m) resolution.
-# 100 pixels × 3" = 300" = 0.0833° lat  ≈ 9.3 km N–S
-# 100 pixels × 3" / cos(45.9°) = 0.120° ≈ 8.6 km E–W
-center_lon = 6.87    # °E
-center_lat = 45.92   # °N
-extent_lat = 0.0833  # degrees latitude
-extent_lon = 0.120   # degrees longitude
+# Study area — change center_lon/center_lat and location_name to move to a new location.
+# extent_lat/extent_lon control the N–S and E–W span (decimal degrees).
+# At mid-latitudes, 0.0833° lat ≈ 0.120° lon ≈ 100 SRTM pixels (~9 km).
+location_name = "Chamonix"
+center_lon    = 6.87    # °E
+center_lat    = 45.92   # °N
+extent_lat    = 0.0833  # degrees latitude
+extent_lon    = 0.120   # degrees longitude
+location_tag  = lowercase(replace(location_name, " " => "_"))
 
 region = Extent(
     X = (center_lon - extent_lon / 2, center_lon + extent_lon / 2),
     Y = (center_lat - extent_lat / 2, center_lat + extent_lat / 2),
 )
 
-simulation_day   = 172               # 21 June — summer solstice
+simulation_day   = 172               # day of year (1–365); 172 = 21 June (summer solstice)
 hour_step        = 1.0
 hours_of_day     = 6.0:hour_step:20.0
 default_albedo   = 0.2
@@ -70,7 +69,8 @@ terrain_grids = compute_terrain_grids(utm_dem; n_horizon_angles)
    horizons_u) = terrain_grids
 
 center_point          = Point([center_lon, center_lat])
-aerosol_optical_depth = get_aerosol_optical_depth(center_point, 0.01, 6)
+simulation_month      = ceil(Int, (simulation_day / 365.25) * 12)  # approximate month for aerosol lookup
+aerosol_optical_depth = get_aerosol_optical_depth(center_point, 0.01, simulation_month)
 solar_model = SolarProblem(; scattered_uv = false, aerosol_optical_depth)
 
 # ============================================================================
@@ -141,9 +141,9 @@ p_aspect = heatmap(x_coords_utm, y_plt, aspect_plt;
 
 display(plot(p_elev, p_slope, p_aspect;
     layout = (1, 3), size = (1200, 420), left_margin = 4Plots.mm,
-    plot_title = "Terrain — Chamonix, French Alps  (SRTM ~90 m,  ~$(nx_utm)×$(ny_utm) pixels)"))
-savefig("chamonix_terrain.png")
-println("  Saved chamonix_terrain.png")
+    plot_title = "Terrain — $location_name  (SRTM ~90 m,  ~$(nx_utm)×$(ny_utm) pixels)"))
+savefig("$(location_tag)_terrain.png")
+println("  Saved $(location_tag)_terrain.png")
 
 # ── Fig. 2: Horizon angles (4 cardinal directions) ─────────────────────────
 hz_dirs  = [(1, "N 0°"), (7, "E 90°"), (13, "S 180°"), (19, "W 270°")]
@@ -156,9 +156,9 @@ hz_panels = [heatmap(x_coords_utm, y_plt, ascending_y(y_coords_utm, horizons[:, 
     colorbar_title = "°", common_kw...) for (d, lbl) in hz_dirs]
 
 display(plot(hz_panels...; layout = (1, 4), size = (1400, 420), left_margin = 4Plots.mm,
-    plot_title = "Terrain horizon angles — Chamonix"))
-savefig("chamonix_horizons.png")
-println("  Saved chamonix_horizons.png")
+    plot_title = "Terrain horizon angles — $location_name"))
+savefig("$(location_tag)_horizons.png")
+println("  Saved $(location_tag)_horizons.png")
 
 # ── Fig. 3: Solar radiation — 2×2 hourly panels ────────────────────────────
 all_vals  = Float64.(filter(!ismissing, vec(global_terrain)))
@@ -172,17 +172,17 @@ solar_panels = [heatmap(x_coords_utm, y_plt,
     for pi in panel_idx]
 
 display(plot(solar_panels...; layout = (2, 2), size = (1100, 900), left_margin = 4Plots.mm,
-    plot_title = "Solar radiation — Day $simulation_day (summer solstice), Chamonix"))
-savefig("chamonix_solar_panel.png")
-println("  Saved chamonix_solar_panel.png")
+    plot_title = "Solar radiation — Day $simulation_day, $location_name"))
+savefig("$(location_tag)_solar_panel.png")
+println("  Saved $(location_tag)_solar_panel.png")
 
 # ── Fig. 4: Daily total radiation ──────────────────────────────────────────
 display(heatmap(x_coords_utm, y_plt, ascending_y(y_coords_utm, daily_MJ)[2];
     color = :inferno, colorbar_title = "MJ/m²/day",
-    title = "Daily total solar radiation — Day $simulation_day, Chamonix",
+    title = "Daily total solar radiation — Day $simulation_day, $location_name",
     size = (850, 720), left_margin = 6Plots.mm, common_kw...))
-savefig("chamonix_solar_daily.png")
-println("  Saved chamonix_solar_daily.png")
+savefig("$(location_tag)_solar_daily.png")
+println("  Saved $(location_tag)_solar_daily.png")
 
 # ── Fig. 5: Animated solar radiation — one frame per hour ──────────────────
 println("Animating...")
@@ -194,13 +194,13 @@ anim_solar = @animate for k in 1:length(hours_vec)
     _, frame_plt = ascending_y(y_coords_utm, frame)
     heatmap(x_coords_utm, y_plt, frame_plt;
         color = :inferno, clims = solar_clims,
-        title = "Global terrain radiation — $(fmt_h(hours_vec[k]))\nDay $simulation_day (summer solstice), Chamonix",
+        title = "Global terrain radiation — $(fmt_h(hours_vec[k]))\nDay $simulation_day, $location_name",
         colorbar_title = "W/m²", common_kw...,
         titlefontsize = 9, size = (700, 600),
         left_margin = 5Plots.mm, bottom_margin = 5Plots.mm)
 end
-gif(anim_solar, "chamonix_solar.gif"; fps = 4)
-println("  Saved chamonix_solar.gif")
+gif(anim_solar, "$(location_tag)_solar.gif"; fps = 4)
+println("  Saved $(location_tag)_solar.gif")
 
 println("\nDone! $(nx_utm)×$(ny_utm) pixel grid, day $simulation_day, " *
         "$(length(hours_vec)) hours simulated.")

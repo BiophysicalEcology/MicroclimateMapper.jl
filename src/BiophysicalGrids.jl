@@ -52,6 +52,7 @@ include("Mesoclimate/Mesoclimate.jl")
 include("WeatherDataSources/common.jl")
 include("WeatherDataSources/TerraClimate.jl")
 include("WeatherDataSources/ERA5.jl")
+include("WeatherDataSources/GRIDMET.jl")
 include("WeatherDataSources/climate_scenarios.jl")
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ export
     Plus2C,
     Plus4C,
     ERA5,
+    GRIDMET,
     # Weather data
     get_weather,
     apply_climate_scenario,
