@@ -56,7 +56,7 @@ gm = get_weather(GRIDMET, Point([-106.8, 39.9]);
 gm.tminn   # Unitful K daily min temperatures
 gm.rhminn  # 0–1 RH fractions
 ```
-""" GRIDMET_get_weather
+""" GRIDMET
 
 function get_weather(
     ::Type{GRIDMET},
@@ -81,7 +81,7 @@ function get_weather(
         paths = getraster(GRIDMET, gm_layers; date = Date(yr))
         for lyr in gm_layers
             r  = Raster(paths[lyr]; lazy = true)
-            ts = r[X(Near(lon)), Y(Near(lat)), :]
+            ts = r[X(Near(lon)), Y(Near(lat))]
             append!(raw[lyr], Float64.(collect(ts)))
         end
     end
