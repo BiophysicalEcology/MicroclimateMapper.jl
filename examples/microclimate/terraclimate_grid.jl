@@ -170,15 +170,18 @@ println("  July Tmin: $tmin_july_C °C,  Tmax: $tmax_july_C °C,  deep soil T: $
 # Step 8: Shared soil model and lapse correction helper
 # ============================================================================
 
-soil_thermal_model = CampbelldeVriesSoilThermal(;
-    bulk_density          = 1.3u"Mg/m^3",
-    mineral_density       = 2.56u"Mg/m^3",
+soil_thermal = CampbelldeVriesSoilThermal(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
-    saturation_moisture   = 0.42u"m^3/m^3",
     recirculation_power   = 4.0,
     return_flow_threshold = 0.162,
+)
+
+soil_hydraulics = example_soil_hydraulics(depths;
+    bulk_density    = 1.3u"Mg/m^3",
+    mineral_density = 2.56u"Mg/m^3",
+    root_density    = fill(0.0, length(depths))u"m/m^3",
 )
 
 solar_model = SolarProblem()
@@ -291,27 +294,21 @@ T_converged = fill!(Matrix{Any}(undef, ny_utm, nx_utm), nothing)
             T_tmp
         end
 
-        st = SolarTerrain(;
+        site = Site(;
             latitude             = lat,
             longitude            = lon,
             elevation            = elev,
             slope                = slp,
             aspect               = asp,
-            albedo               = 0.15,
-            atmospheric_pressure = pres,
             horizon_angles       = @view(horizons_u[i, j, :]),
-        )
-
-        mt = MicroTerrain(;
-            elevation        = elev,
-            roughness_height = 0.004u"m",
-            karman_constant  = 0.4,
-            dyer_constant    = 16.0,
-            viewfactor       = 1.0,
+            sky_view_fraction    = 1.0,
+            albedo               = 0.15,
+            roughness_height     = 0.004u"m",
+            atmospheric_pressure = pres,
         )
 
         result = simulate_microclimate(
-            st, mt, soil_thermal_model, wp;
+            site, soil_thermal, soil_hydraulics, wp;
             depths, heights, solar_model,
             initial_soil_temperature = T_init,
             vapour_pressure_equation = vp_method,

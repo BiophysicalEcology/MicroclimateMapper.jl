@@ -33,7 +33,7 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    simulate_microclimate(solar_terrain, micro_terrain, soil_thermal_model, weather; kwargs...)
+    simulate_microclimate(site, soil_thermal, soil_hydraulics, weather; kwargs...)
 
 Run the microclimate model for a single location.
 
@@ -41,18 +41,20 @@ Run the microclimate model for a single location.
 - `environment_minmax::MonthlyMinMaxEnvironment`
 - `environment_daily::DailyTimeseries`
 - `environment_hourly::HourlyTimeseries` (or `nothing`)
-- `latitude` — latitude with Unitful degrees
 - `days` — day-of-year vector matching the environment data length
 
-The user is responsible for constructing the terrain and soil model structs with
-appropriate parameters for the simulation site.
+The user is responsible for constructing the `Site` and soil model structs with
+appropriate parameters for the simulation site. `soil_hydraulics` (typically a
+`CampbellSoilHydraulics`) carries the per-depth `bulk_density` and `mineral_density`
+profiles that the thermal model reads.
 
 # Keyword arguments
-- `soil_moisture_model`: if `nothing` (default), a sensible default is built from
-  `soil_thermal_model.bulk_density` and `soil_thermal_model.mineral_density`.
+- `snow_model`: snow formulation (default: `NoSnow()`).
 - `depths`: soil node depths (default: Microclimate.jl's 19-node `DEFAULT_DEPTHS`).
 - `heights`: air profile node heights (default: `[0.01, 2.0]u"m"`).
-- `runmoist`: enable soil moisture simulation (default: `false`).
+- `runmoist`: enable dynamic soil moisture simulation (default: `false`). When
+  `false`, soil moisture is prescribed from the monthly `soil_moisture_monthly`
+  field of `weather` if present.
 - `clearsky`: override cloud cover to zero for all timesteps (default: `false`).
 - `organic_soil_cap`: apply an organic litter cap to the top two soil nodes, setting
   `mineral_conductivity = 0.2 W/m/K` and `mineral_heat_capacity = 1920 J/kg/K` for
@@ -62,21 +64,25 @@ appropriate parameters for the simulation site.
 - `convergence_tolerance`: stop iterating when the maximum nodal temperature
   change between passes is below this value (default: `0.1u"K"`).  Set to
   `nothing` to always run exactly `iterate_day` passes.
-- `spinup`: spin up the first day (default: `false`).
+- `spinup`: if `true`, integrate consecutive days with `iterate_day` spinup
+  passes on day 1 (`ConsecutiveDayMode`); otherwise integrate each day
+  independently for `iterate_day` passes (`NonConsecutiveDayMode`, default).
 - `initial_soil_temperature`: initial soil temperatures. Defaults to `nothing`,
   which lets Microclimate.jl use the mean air temperature of each month as the
   starting T₀ — matching NicheMapR's monthly (`microdaily=0`) behaviour.
 - `initial_soil_moisture`: initial volumetric soil moisture fractions.
+- `vapour_pressure_equation`: vapour-pressure formulation used in the boundary
+  layer and soil energy balance (default: `GoffGratch()`).
 
 # Returns
 `MicroResult` from `Microclimate.solve`.
 """
 function simulate_microclimate(
-    solar_terrain::SolarTerrain,
-    micro_terrain::MicroTerrain,
-    soil_thermal_model,
+    site::Site,
+    soil_thermal,
+    soil_hydraulics,
     weather::NamedTuple;
-    soil_moisture_model = nothing,
+    snow_model = NoSnow(),
     depths = Microclimate.DEFAULT_DEPTHS,
     heights = [0.01, 2.0]u"m",
     runmoist::Bool = false,
@@ -88,9 +94,10 @@ function simulate_microclimate(
     spinup::Bool = false,
     initial_soil_temperature = nothing,
     initial_soil_moisture = fill(0.42 * 0.25, length(depths)),
+    vapour_pressure_equation = GoffGratch(),
     kwargs...,
 )
-    (; environment_minmax, environment_daily, environment_hourly, latitude, days) = weather
+    (; environment_minmax, environment_daily, environment_hourly, days) = weather
 
     if clearsky
         n = length(environment_minmax.cloud_min)
@@ -109,7 +116,7 @@ function simulate_microclimate(
     end
 
     # Build (ndepths × ndays) precomputed soil moisture matrix from monthly weather data.
-    # Used by Microclimate.jl when runmoist=false to vary soil moisture per day.
+    # Consumed by PrescribedSoilMoisture when runmoist=false to vary soil moisture per day.
     precomputed_soil_moisture = let sm = get(weather, :soil_moisture_monthly, nothing)
         if isnothing(sm)
             nothing
@@ -121,58 +128,65 @@ function simulate_microclimate(
 
     if organic_soil_cap
         n = length(depths)
-        k_vec = fill(soil_thermal_model.mineral_conductivity, n)
-        c_vec = fill(soil_thermal_model.mineral_heat_capacity, n)
+        k_vec = fill(soil_thermal.mineral_conductivity, n)
+        c_vec = fill(soil_thermal.mineral_heat_capacity, n)
         k_vec[1] = 0.2u"W/m/K"
         k_vec[2] = 0.2u"W/m/K"
         c_vec[1] = 1920.0u"J/kg/K"
         c_vec[2] = 1920.0u"J/kg/K"
-        soil_thermal_model = CampbelldeVriesSoilThermal(;
-            de_vries_shape_factor = soil_thermal_model.de_vries_shape_factor,
+        soil_thermal = CampbelldeVriesSoilThermal(;
+            de_vries_shape_factor = soil_thermal.de_vries_shape_factor,
             mineral_conductivity  = k_vec,
-            mineral_density       = soil_thermal_model.mineral_density,
             mineral_heat_capacity = c_vec,
-            bulk_density          = soil_thermal_model.bulk_density,
-            saturation_moisture   = soil_thermal_model.saturation_moisture,
-            recirculation_power   = soil_thermal_model.recirculation_power,
-            return_flow_threshold = soil_thermal_model.return_flow_threshold,
+            recirculation_power   = soil_thermal.recirculation_power,
+            return_flow_threshold = soil_thermal.return_flow_threshold,
         )
     end
 
-    # Build default soil moisture model from soil thermal parameters if not provided
-    if isnothing(soil_moisture_model)
-        soil_moisture_model = example_soil_moisture_model(
-            depths;
-            bulk_density = ustrip(u"Mg/m^3", soil_thermal_model.bulk_density),
-            mineral_density = ustrip(u"Mg/m^3", soil_thermal_model.mineral_density),
-            root_density = fill(0.0, length(depths))u"m/m^3",
+    # Translate the (iterate_day, convergence_tolerance, spinup, runmoist) flags
+    # into the new Microclimate config formulations.
+    convergence = isnothing(convergence_tolerance) ?
+        FixedSoilTemperatureIterations(iterate_day) :
+        SoilTemperatureConvergenceTolerance(;
+            tolerance = convergence_tolerance,
+            max_iterations_per_day = iterate_day,
         )
-    end
+    time_mode = spinup ?
+        ConsecutiveDayMode(; spinup_first_day = true) :
+        NonConsecutiveDayMode(; iterations_per_day = iterate_day)
+    soil_moisture_strategy = runmoist ?
+        DynamicSoilMoisture() :
+        PrescribedSoilMoisture(; precomputed_soil_moisture)
+
+    config = MicroConfig(;
+        vapour_pressure_equation,
+        convergence,
+        time_mode,
+        soil_moisture_strategy,
+    )
+
+    parameters = MicroParameters(;
+        soil_thermal,
+        soil_hydraulics,
+        snow = snow_model,
+    )
 
     # initial_soil_temperature = nothing → Microclimate.jl resets T0 to the mean
     # air temperature of each month (NicheMapR microdaily=0 behaviour).
-
     problem = MicroProblem(;
-        latitude,
         days,
         hours = collect(0.0:1.0:23.0),
         depths,
         heights,
         solar_model,
-        solar_terrain,
-        micro_terrain,
-        soil_moisture_model,
-        soil_thermal_model,
+        site,
+        parameters,
         environment_minmax,
         environment_daily,
         environment_hourly,
-        iterate_day,
-        convergence_tolerance,
-        runmoist,
-        spinup,
         initial_soil_temperature,
         initial_soil_moisture,
-        precomputed_soil_moisture,
+        config,
         kwargs...,
     )
 

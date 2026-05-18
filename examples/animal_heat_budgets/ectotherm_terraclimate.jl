@@ -44,35 +44,32 @@ year = 2000
 weather          = get_weather(TerraClimate, lon, lat; ystart = year, elevation)
 weather_scenario = apply_climate_scenario(Historical, weather, lon, lat)
 
-# ── Step 2: Terrain and soil ──────────────────────────────────────────────
-solar_terrain = SolarTerrain(;
+# ── Step 2: Site and soil ─────────────────────────────────────────────────
+site = Site(;
+    latitude             = lat * u"°",
+    longitude            = lon * u"°",
     elevation,
     slope                = 0.0u"°",
     aspect               = 0.0u"°",
     horizon_angles       = fill(0.0u"°", 24),
+    sky_view_fraction    = 1.0,
     albedo               = 0.15,
+    roughness_height     = 0.004u"m",
     atmospheric_pressure = atmospheric_pressure(elevation),
-    latitude             = lat * u"°",
-    longitude            = lon * u"°",
 )
 
-micro_terrain = MicroTerrain(;
-    elevation,
-    roughness_height = 0.004u"m",
-    karman_constant  = 0.4,
-    dyer_constant    = 16.0,
-    viewfactor       = 1.0,
-)
-
-soil_thermal_model = CampbelldeVriesSoilThermal(;
-    bulk_density          = 1.3u"Mg/m^3",
-    mineral_density       = 2.56u"Mg/m^3",
+soil_thermal = CampbelldeVriesSoilThermal(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
-    saturation_moisture   = 0.42u"m^3/m^3",
     recirculation_power   = 4.0,
     return_flow_threshold = 0.162,
+)
+
+soil_hydraulics = example_soil_hydraulics(depths;
+    bulk_density    = 1.3u"Mg/m^3",
+    mineral_density = 2.56u"Mg/m^3",
+    root_density    = fill(0.0, length(depths))u"m/m^3",
 )
 
 # ── Step 3: Microclimate at 0% and 90% shade ──────────────────────────────
@@ -101,19 +98,30 @@ common_micro_kwargs = (;
 
 println("Solving microclimate (0% shade)...")
 low_shade_result = simulate_microclimate(
-    solar_terrain, micro_terrain, soil_thermal_model,
+    site, soil_thermal, soil_hydraulics,
     with_shade(weather_scenario, minimum_shade);
     common_micro_kwargs...,
 )
 
+using ProfileView
+using Cthulhu
+
+@time for i in 1:10
+low_shade_result = simulate_microclimate(
+    site, soil_thermal, soil_hydraulics,
+    with_shade(weather_scenario, minimum_shade);
+    common_micro_kwargs...,
+)
+end
+
 println("Solving microclimate (90% shade)...")
 high_shade_result = simulate_microclimate(
-    solar_terrain, micro_terrain, soil_thermal_model,
+    site, soil_thermal, soil_hydraulics,
     with_shade(weather_scenario, maximum_shade);
     common_micro_kwargs...,
 )
 
-available_environments = AvailableEnvironments(
+available_environments = Microclimate.AvailableEnvironments(
     low_shade_result, high_shade_result, minimum_shade, maximum_shade, depths, heights
 )
 
@@ -165,7 +173,7 @@ organism = Organism(body, organism_traits)
 limits   = thermoregulation(organism)
 env_pars = example_environment_pars(;
     elevation,
-    α_ground = solar_terrain.albedo,
+    α_ground = site.albedo,
 )
 
 # ── Step 5: Thermoregulation loop ─────────────────────────────────────────

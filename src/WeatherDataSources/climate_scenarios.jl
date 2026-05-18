@@ -27,7 +27,7 @@ where the scenario deltas are drawn from, not where the baseline weather came fr
 ```julia
 weather    = get_weather(TerraClimate, lon, lat; ystart = 2000, elevation)
 weather_2c = apply_climate_scenario(TerraClimate{Plus2C}, weather, lon, lat; ystart = 2000)
-result_2c  = simulate_microclimate(solar_terrain, micro_terrain, soil_thermal_model, weather_2c)
+result_2c  = simulate_microclimate(site, soil_thermal, soil_hydraulics, weather_2c)
 ```
 """
 function apply_climate_scenario end

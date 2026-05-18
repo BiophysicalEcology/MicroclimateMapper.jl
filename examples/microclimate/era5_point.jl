@@ -6,4 +6,4 @@
 # Planned API (same two-step pattern):
 #
 #   weather = get_weather(ERA5, lon, lat; tstart = DateTime(2000,1,1), tend = DateTime(2000,12,31))
-#   result  = simulate_microclimate(solar_terrain, micro_terrain, soil_model, weather)
+#   result  = simulate_microclimate(site, soil_thermal, soil_hydraulics, weather)

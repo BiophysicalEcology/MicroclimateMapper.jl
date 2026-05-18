@@ -6,7 +6,8 @@ using Statistics: mean
 using Unitful
 
 using Microclimate
-using Microclimate: DEFAULT_DEPTHS, example_soil_moisture_model
+using Microclimate: DEFAULT_DEPTHS
+using Microclimate: example_soil_hydraulics, example_soil_thermal_parameters
 using SolarRadiation
 using FluidProperties
 using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation
@@ -65,11 +66,25 @@ export
     get_weather,
     apply_climate_scenario,
     # Microclimate types (re-exported from Microclimate.jl)
-    MicroTerrain,
+    Site,
+    MicroParameters,
+    MicroConfig,
     CampbelldeVriesSoilThermal,
+    CampbellSoilHydraulics,
     DailyTimeseries,
     MonthlyMinMaxEnvironment,
     HourlyTimeseries,
+    FixedSoilTemperatureIterations,
+    SoilTemperatureConvergenceTolerance,
+    NonConsecutiveDayMode,
+    ConsecutiveDayMode,
+    PrescribedSoilMoisture,
+    DynamicSoilMoisture,
+    NoSnow,
+    SnowModel,
+    # Microclimate helpers
+    example_soil_hydraulics,
+    example_soil_thermal_parameters,
     # Simulation
     simulate_microclimate,
     # Terrain utilities

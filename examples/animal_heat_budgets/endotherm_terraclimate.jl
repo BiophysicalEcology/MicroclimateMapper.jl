@@ -39,43 +39,42 @@ year = 2000
 weather          = get_weather(TerraClimate, lon, lat; ystart = year, elevation)
 weather_scenario = apply_climate_scenario(Historical, weather, lon, lat)
 
-# ── Step 2: Terrain and soil ──────────────────────────────────────────────
-solar_terrain = SolarTerrain(;
+# ── Step 2: Site and soil ─────────────────────────────────────────────────
+site = Site(;
+    latitude             = lat * u"°",
+    longitude            = lon * u"°",
     elevation,
     slope                = 0.0u"°",
     aspect               = 0.0u"°",
     horizon_angles       = fill(0.0u"°", 24),
+    sky_view_fraction    = 1.0,
     albedo               = 0.15,
+    roughness_height     = 0.004u"m",
     atmospheric_pressure = atmospheric_pressure(elevation),
-    latitude             = lat * u"°",
-    longitude            = lon * u"°",
 )
 
-micro_terrain = MicroTerrain(;
-    elevation,
-    roughness_height = 0.004u"m",
-    karman_constant  = 0.4,
-    dyer_constant    = 16.0,
-    viewfactor       = 1.0,
-)
+depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 
-soil_thermal_model = CampbelldeVriesSoilThermal(;
-    bulk_density          = 1.3u"Mg/m^3",
-    mineral_density       = 2.56u"Mg/m^3",
+soil_thermal = CampbelldeVriesSoilThermal(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
-    saturation_moisture   = 0.42u"m^3/m^3",
     recirculation_power   = 4.0,
     return_flow_threshold = 0.162,
+)
+
+soil_hydraulics = example_soil_hydraulics(depths;
+    bulk_density    = 1.3u"Mg/m^3",
+    mineral_density = 2.56u"Mg/m^3",
+    root_density    = fill(0.0, length(depths))u"m/m^3",
 )
 
 # ── Step 3: Solve microclimate ────────────────────────────────────────────
 # Heights [0.01, 2.0] m: index 1 = near-ground, index 2 = 2 m reference height.
 println("Solving microclimate...")
 micro_result = simulate_microclimate(
-    solar_terrain, micro_terrain, soil_thermal_model, weather_scenario;
-    depths   = [0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200]u"cm",
+    site, soil_thermal, soil_hydraulics, weather_scenario;
+    depths,
     heights  = [0.01, 2.0]u"m",
     runmoist = false,
     organic_soil_cap = true,
