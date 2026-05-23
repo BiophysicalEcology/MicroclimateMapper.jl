@@ -58,7 +58,7 @@ site = Site(;
     atmospheric_pressure = atmospheric_pressure(elevation),
 )
 
-soil_thermal = CampbelldeVriesSoilThermal(;
+soil_thermal = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
@@ -201,7 +201,7 @@ state    = [r.state      for r in results]
 height   = [r.height     for r in results]
 depth_nd = [r.depth_node for r in results]
 shade    = [r.shade      for r in results]
-T_air    = [low_shade_result.profile[i].air_temperature[1] for i in 1:nsteps]
+T_air    = low_shade_result.profile.air_temperature[1:nsteps, 1]
 
 T_body_C = ustrip.(u"°C", T_body)
 act      = [s isa Active ? 2 : s isa Basking ? 1 : 0 for s in state]

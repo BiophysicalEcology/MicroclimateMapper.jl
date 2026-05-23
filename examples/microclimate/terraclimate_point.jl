@@ -70,7 +70,7 @@ site = Site(;
 # thermal model reads them through the energy-balance plumbing.
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 
-soil_thermal = CampbelldeVriesSoilThermal(;
+soil_thermal = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor   = 0.1,          # 0.33 for organic, 0.1 for mineral
     mineral_conductivity    = 2.5u"W/m/K",
     mineral_heat_capacity   = 870.0u"J/kg/K",
@@ -113,7 +113,7 @@ result = simulate_microclimate(
 
 # Quick inspection of outputs
 soil_T = result.soil_temperature          # Matrix (timesteps × depths) in K
-air_T  = [p.air_temperature for p in result.profile]  # per-height air temp
+air_T  = result.profile.air_temperature  # Matrix (timesteps × heights) in K
 @show size(soil_T)
 @show result.soil_temperature[1, :]      # first hour, all depths
 
@@ -207,9 +207,9 @@ let
     vel2m_nmr  =  metout.VREF  .* 1u"m/s"
 
     # ---- Julia output matrices (ntimesteps × nheights) ----------------------
-    air_temperature_matrix = hcat([p.air_temperature for p in result.profile]...)'
-    humidity_matrix        = hcat([p.relative_humidity for p in result.profile]...)'
-    wind_matrix            = hcat([p.wind_speed for p in result.profile]...)'
+    air_temperature_matrix = result.profile.air_temperature
+    humidity_matrix        = result.profile.relative_humidity
+    wind_matrix            = result.profile.wind_speed
 
     depths_labels = ["$(round(ustrip(u"cm", d); digits=1)) cm"
                      for d in [0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200]u"cm"]

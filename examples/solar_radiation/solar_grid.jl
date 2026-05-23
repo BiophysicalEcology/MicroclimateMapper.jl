@@ -53,23 +53,23 @@ n_horizon_angles = 24
 # ============================================================================
 
 println("Downloading SRTM DEM and reprojecting to UTM...")
-(; utm_dem, x_coords_utm, y_coords_utm, nx_utm, ny_utm, cs) =
-    load_utm_dem(center_lon, center_lat, extent_lon, extent_lat)
-println("  UTM grid: $(nx_utm) × $(ny_utm) pixels, " *
-        "cell size ≈ $(round(cs[1]; digits=1)) × $(round(cs[2]; digits=1)) m")
+(; utm_dem, cs) = load_utm_dem(center_lon, center_lat, extent_lon, extent_lat)
 
 # ============================================================================
 # Steps 2–5: Slope, aspect, lat/lon, horizon angles, unit-tagged rasters
 # ============================================================================
 
-println("Computing terrain grids (slope, aspect, horizons)...")
-(; dem_data, data_is_xy, y_descending,
-   elevation_m, slope_deg, aspect_deg,
-   latitude_deg, longitude_deg, pressure_r,
-   horizons_u) = compute_terrain_grids(utm_dem, x_coords_utm, y_coords_utm;
-                                       n_horizon_angles)
+println("Computing terrain rasters (slope, aspect, horizons)...")
+(; elevation_m, slope_deg, aspect_deg,
+   latitude_deg, longitude_deg, pressure_pa,
+   horizon_angles_deg) = compute_terrain_grids(utm_dem; n_horizon_angles)
 
-albedo_r = map(x -> ismissing(x) ? missing : default_albedo, elevation_m)
+nx_utm = size(elevation_m, X)
+ny_utm = size(elevation_m, Y)
+println("  UTM grid: $(nx_utm) × $(ny_utm) pixels, " *
+        "cell size ≈ $(round(cs[1]; digits=1)) × $(round(cs[2]; digits=1)) m")
+
+albedo_per_pixel = map(x -> ismissing(x) ? missing : default_albedo, elevation_m)
 
 solar_model = SolarProblem(; scattered_uv = false)
 
@@ -84,31 +84,31 @@ global_terrain_hours = Vector{Matrix}(undef, 0)
 
 for hour in hours_of_day
     print("  hour $hour  \r")
-    solar_grid = Matrix{Any}(undef, ny_utm, nx_utm)
+    solar_grid = Matrix{Any}(undef, nx_utm, ny_utm)
 
-    for j in 1:nx_utm, i in 1:ny_utm
-        # Map loop indices → raster positional indices
-        ri, rj = data_is_xy ? (j, i) : (i, j)
+    for j in 1:ny_utm, i in 1:nx_utm
+        latitude  = latitude_deg[X = i, Y = j]
+        longitude = longitude_deg[X = i, Y = j]
+        elevation = elevation_m[X = i, Y = j]
+        slope     = slope_deg[X = i, Y = j]
+        aspect    = aspect_deg[X = i, Y = j]
+        albedo    = albedo_per_pixel[X = i, Y = j]
+        pressure  = pressure_pa[X = i, Y = j]
 
-        lat  = latitude_deg[ri, rj];   lon  = longitude_deg[ri, rj]
-        elev = elevation_m[ri,  rj];   slp  = slope_deg[ri,  rj]
-        asp  = aspect_deg[ri,   rj];   alb  = albedo_r[ri,   rj]
-        pres = pressure_r[ri,   rj]
-
-        if any(ismissing.([lat, lon, elev, slp, asp, alb, pres]))
+        if any(ismissing, (latitude, longitude, elevation, slope, aspect, albedo, pressure))
             solar_grid[i, j] = missing
             continue
         end
 
         terrain = SolarTerrain(;
-            latitude             = lat,
-            longitude            = lon,
-            elevation            = elev,
-            slope                = slp,
-            aspect               = asp,
-            albedo               = alb,
-            atmospheric_pressure = pres,
-            horizon_angles       = horizons_u[i, j, :],
+            latitude,
+            longitude,
+            elevation,
+            slope,
+            aspect,
+            albedo,
+            atmospheric_pressure = pressure,
+            horizon_angles       = parent(horizon_angles_deg[X = i, Y = j]),
         )
 
         solar_grid[i, j] = solar_radiation(
@@ -130,113 +130,108 @@ println()
 
 println("Integrating daily total radiation...")
 hours_vec   = collect(hours_of_day)
-daily_Wh    = zeros(ny_utm, nx_utm)
+daily_Wh    = zeros(nx_utm, ny_utm)
 
 for k in 1:(length(hours_vec) - 1)
     dt = hours_vec[k + 1] - hours_vec[k]
-    for j in 1:nx_utm, i in 1:ny_utm
+    for j in 1:ny_utm, i in 1:nx_utm
         v1, v2 = global_terrain_hours[k][i, j], global_terrain_hours[k + 1][i, j]
         (!ismissing(v1) && !ismissing(v2)) && (daily_Wh[i, j] += dt * (v1 + v2) / 2)
     end
 end
 
-daily_MJ = daily_Wh .* 0.0036  # Wh/m² → MJ/m²/day
-valid_d  = filter(!iszero, vec(daily_MJ))
-println("  Daily range: $(round(minimum(valid_d); digits=1)) – " *
-        "$(round(maximum(valid_d); digits=1)) MJ/m²/day")
+# Wrap as Rasters carrying the spatial CRS.
+spatial_dims  = (dims(elevation_m, X), dims(elevation_m, Y))
+output_crs    = crs(elevation_m)
+daily_MJ      = Raster(daily_Wh .* 0.0036, spatial_dims; crs = output_crs)  # Wh/m² → MJ/m²/day
+valid_daily   = filter(!iszero, vec(parent(daily_MJ)))
+println("  Daily range: $(round(minimum(valid_daily); digits=1)) – " *
+        "$(round(maximum(valid_daily); digits=1)) MJ/m²/day")
 
 # ============================================================================
 # Step 9: Plot results
 # ============================================================================
 
 println("Plotting...")
-fmt_h(h) = @sprintf("%02d:%02d", floor(Int, h), round(Int, (h - floor(h)) * 60))
+format_hour(h) = @sprintf("%02d:%02d", floor(Int, h), round(Int, (h - floor(h)) * 60))
 
-# ascending_y(y, m) flips both y and the (ny,nx) matrix so heatmap gets ascending y.
-# Slope/aspect rasters are unit-tagged; strip units and reorder to (ny, nx) first.
-to_mat(r) = map(x -> ismissing(x) ? NaN : ustrip(x), r)
-to_ny_nx(r) = data_is_xy ? permutedims(to_mat(r)) : to_mat(r)
-
-y_plt, dem_plt    = ascending_y(y_coords_utm, dem_data)
-_,     slope_plt  = ascending_y(y_coords_utm, to_ny_nx(slope_deg))
-_,     aspect_plt = ascending_y(y_coords_utm, to_ny_nx(aspect_deg))
+elevation_for_plot = map(x -> ismissing(x) ? NaN : ustrip(u"m", x), elevation_m)
+slope_for_plot     = map(x -> ismissing(x) ? NaN : ustrip(u"°", x), slope_deg)
+aspect_for_plot    = map(x -> ismissing(x) ? NaN : ustrip(u"°", x), aspect_deg)
 
 common_kw = (; aspect_ratio = :equal, xlabel = "Easting (m)", ylabel = "Northing (m)")
 
 # ── Fig. 1: Terrain properties ─────────────────────────────────────────────
-p_elev = heatmap(x_coords_utm, y_plt, dem_plt;
+p_elev = Plots.heatmap(elevation_for_plot;
     color = :terrain, title = "Elevation (m)",
-    clims = extrema(filter(!isnan, vec(dem_plt))), common_kw...)
-p_slope = heatmap(x_coords_utm, y_plt, slope_plt;
+    clims = extrema(filter(!isnan, vec(parent(elevation_for_plot)))), common_kw...)
+p_slope = Plots.heatmap(slope_for_plot;
     color = :YlOrRd, title = "Slope (°)",
-    clims = (0.0, maximum(filter(!isnan, vec(slope_plt)))), common_kw...)
-p_aspect = heatmap(x_coords_utm, y_plt, aspect_plt;
+    clims = (0.0, maximum(filter(!isnan, vec(parent(slope_for_plot))))), common_kw...)
+p_aspect = Plots.heatmap(aspect_for_plot;
     color = :hsv, title = "Aspect (°)", clims = (0.0, 360.0), common_kw...)
 
-display(plot(p_elev, p_slope, p_aspect;
+display(Plots.plot(p_elev, p_slope, p_aspect;
     layout = (1, 3), size = (1200, 420), left_margin = 4Plots.mm,
     plot_title = "Terrain — Chamonix, French Alps  (SRTM ~90 m,  ~$(nx_utm)×$(ny_utm) pixels)"))
-savefig("chamonix_terrain.png")
+Plots.savefig("chamonix_terrain.png")
 println("  Saved chamonix_terrain.png")
 
 # ── Fig. 2: Horizon angles (4 cardinal directions) ─────────────────────────
-hz_dirs  = [(1, "N 0°"), (7, "E 90°"), (13, "S 180°"), (19, "W 270°")]
-horizons = ustrip.(u"°", horizons_u)  # raw Float64 for plotting
-hz_valid = filter(!isnan, vec(horizons))
-hz_clims = isempty(hz_valid) ? (0.0, 1.0) : extrema(hz_valid)
+horizon_directions = [(1, "N 0°"), (7, "E 90°"), (13, "S 180°"), (19, "W 270°")]
+horizons_plain     = map(x -> ismissing(x) ? NaN : ustrip(u"°", x), horizon_angles_deg)
+horizon_valid      = filter(!isnan, vec(parent(horizons_plain)))
+horizon_clims      = isempty(horizon_valid) ? (0.0, 1.0) : extrema(horizon_valid)
 
-hz_panels = [heatmap(x_coords_utm, y_plt, ascending_y(y_coords_utm, horizons[:, :, d])[2];
-    color = :YlOrRd, title = "Horizon $lbl", clims = hz_clims,
-    colorbar_title = "°", common_kw...) for (d, lbl) in hz_dirs]
+horizon_panels = [Plots.heatmap(view(horizons_plain, azimuth = d);
+    color = :YlOrRd, title = "Horizon $label", clims = horizon_clims,
+    colorbar_title = "°", common_kw...) for (d, label) in horizon_directions]
 
-display(plot(hz_panels...; layout = (1, 4), size = (1400, 420), left_margin = 4Plots.mm,
+display(Plots.plot(horizon_panels...; layout = (1, 4), size = (1400, 420), left_margin = 4Plots.mm,
     plot_title = "Terrain horizon angles — Chamonix"))
-savefig("chamonix_horizons.png")
+Plots.savefig("chamonix_horizons.png")
 println("  Saved chamonix_horizons.png")
 
 # ── Fig. 3: Solar radiation — 2×2 hourly panels ────────────────────────────
-all_vals  = vcat([Float64.(filter(!ismissing, vec(g))) for g in global_terrain_hours]...)
-s_clims   = (0.0, maximum(all_vals))
-panel_idx = round.(Int, range(2, length(hours_vec) - 1; length = 4))
+all_solar_values = vcat([Float64.(filter(!ismissing, vec(g))) for g in global_terrain_hours]...)
+solar_clims      = (0.0, maximum(all_solar_values))
+panel_indices    = round.(Int, range(2, length(hours_vec) - 1; length = 4))
 
-solar_panels = [heatmap(x_coords_utm, y_plt,
-    ascending_y(y_coords_utm, Float64.(coalesce.(global_terrain_hours[pi], NaN)))[2];
-    color = :inferno, title = "Hour $(fmt_h(hours_vec[pi]))",
-    clims = s_clims, colorbar_title = "W/m²", common_kw...)
-    for pi in panel_idx]
+solar_panels = [Plots.heatmap(
+    Raster(Float64.(coalesce.(global_terrain_hours[pi], NaN)), spatial_dims; crs = output_crs);
+    color = :inferno, title = "Hour $(format_hour(hours_vec[pi]))",
+    clims = solar_clims, colorbar_title = "W/m²", common_kw...)
+    for pi in panel_indices]
 
-display(plot(solar_panels...; layout = (2, 2), size = (1100, 900), left_margin = 4Plots.mm,
+display(Plots.plot(solar_panels...; layout = (2, 2), size = (1100, 900), left_margin = 4Plots.mm,
     plot_title = "Solar radiation — Day $simulation_day (summer solstice), Chamonix"))
-savefig("chamonix_solar_panel.png")
+Plots.savefig("chamonix_solar_panel.png")
 println("  Saved chamonix_solar_panel.png")
 
 # ── Fig. 4: Daily total radiation ──────────────────────────────────────────
-display(heatmap(x_coords_utm, y_plt, ascending_y(y_coords_utm, daily_MJ)[2];
+display(Plots.heatmap(daily_MJ;
     color = :inferno, colorbar_title = "MJ/m²/day",
     title = "Daily total solar radiation — Day $simulation_day, Chamonix",
     size = (850, 720), left_margin = 6Plots.mm, common_kw...))
-savefig("chamonix_solar_daily.png")
+Plots.savefig("chamonix_solar_daily.png")
 println("  Saved chamonix_solar_daily.png")
 
 # ── Fig. 5: Animated solar radiation — one frame per hour ──────────────────
 println("Animating...")
 
-solar_clims = (0.0, maximum(all_vals))
-
-anim_solar = @animate for k in 1:length(hours_vec)
-    frame = Float64.(coalesce.(global_terrain_hours[k], NaN))
-    _, frame_plt = ascending_y(y_coords_utm, frame)
-    heatmap(x_coords_utm, y_plt, frame_plt;
+solar_animation = @animate for k in 1:length(hours_vec)
+    frame = Raster(Float64.(coalesce.(global_terrain_hours[k], NaN)), spatial_dims; crs = output_crs)
+    Plots.heatmap(frame;
         color = :inferno, clims = solar_clims,
-        title = "Global terrain radiation — $(fmt_h(hours_vec[k]))\nDay $simulation_day (summer solstice), Chamonix",
+        title = "Global terrain radiation — $(format_hour(hours_vec[k]))\nDay $simulation_day (summer solstice), Chamonix",
         colorbar_title = "W/m²", common_kw...,
         titlefontsize = 9, size = (700, 600),
         left_margin = 5Plots.mm, bottom_margin = 5Plots.mm)
 end
-gif(anim_solar, "chamonix_solar.gif"; fps = 4)
+Plots.gif(solar_animation, "chamonix_solar.gif"; fps = 4)
 println("  Saved chamonix_solar.gif")
 
 println("\nDone! $(nx_utm)×$(ny_utm) pixel grid, day $simulation_day, " *
         "$(length(hours_vec)) hours simulated.")
-println("Daily solar range: $(round(minimum(valid_d); digits=1)) – " *
-        "$(round(maximum(valid_d); digits=1)) MJ/m²/day")
+println("Daily solar range: $(round(minimum(valid_daily); digits=1)) – " *
+        "$(round(maximum(valid_daily); digits=1)) MJ/m²/day")

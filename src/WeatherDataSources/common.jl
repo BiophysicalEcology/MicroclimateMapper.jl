@@ -134,7 +134,7 @@ function simulate_microclimate(
         k_vec[2] = 0.2u"W/m/K"
         c_vec[1] = 1920.0u"J/kg/K"
         c_vec[2] = 1920.0u"J/kg/K"
-        soil_thermal = CampbelldeVriesSoilThermal(;
+        soil_thermal = CampbelldeVriesSoilProperties(;
             de_vries_shape_factor = soil_thermal.de_vries_shape_factor,
             mineral_conductivity  = k_vec,
             mineral_heat_capacity = c_vec,

@@ -55,7 +55,7 @@ site = Site(;
 
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 
-soil_thermal = CampbelldeVriesSoilThermal(;
+soil_thermal = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
@@ -168,11 +168,11 @@ Q_gen             = 0.0u"W"
 endo_results = Vector{NamedTuple}(undef, nsteps)
 println("Running endotherm thermoregulation loop...")
 
+profile = micro_result.profile
 for step in 1:nsteps
-    profile = micro_result.profile[step]
-    T_air   = profile.air_temperature[2]    # 2 m reference height
-    rh      = profile.relative_humidity[2]
-    wind    = profile.wind_speed[2]
+    T_air   = profile.air_temperature[step, 2]    # 2 m reference height
+    rh      = profile.relative_humidity[step, 2]
+    wind    = profile.wind_speed[step, 2]
 
     environment_vars = example_environment_vars(;
         T_air,
@@ -197,7 +197,7 @@ for step in 1:nsteps
 end
 
 # ── Extract outputs ───────────────────────────────────────────────────────
-T_air_C      = [ustrip(u"°C",   micro_result.profile[i].air_temperature[2])  for i in 1:nsteps]
+T_air_C      = [ustrip(u"°C",   micro_result.profile.air_temperature[i, 2])  for i in 1:nsteps]
 T_core_C     = [ustrip(u"°C",   endo_results[i].thermoregulation.T_core)     for i in 1:nsteps]
 Q_gen_W      = [ustrip(u"W",    endo_results[i].energy_fluxes.Q_gen)         for i in 1:nsteps]
 m_evap_gh    = [ustrip(u"g/hr", endo_results[i].mass_fluxes.m_evap)          for i in 1:nsteps]
