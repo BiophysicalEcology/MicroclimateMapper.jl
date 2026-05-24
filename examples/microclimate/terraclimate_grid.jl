@@ -170,7 +170,7 @@ println("  July Tmin: $tmin_july_C °C,  Tmax: $tmax_july_C °C,  deep soil T: $
 # Step 8: Shared soil model and lapse correction helper
 # ============================================================================
 
-soil_thermal = CampbelldeVriesSoilProperties(;
+soil_properties_model = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor = 0.1,
     mineral_conductivity  = 2.5u"W/m/K",
     mineral_heat_capacity = 870.0u"J/kg/K",
@@ -178,13 +178,32 @@ soil_thermal = CampbelldeVriesSoilProperties(;
     return_flow_threshold = 0.162,
 )
 
-soil_hydraulics = example_soil_hydraulics(depths;
+soil_hydraulic_model = example_soil_hydraulics(depths;
     bulk_density    = 1.3u"Mg/m^3",
     mineral_density = 2.56u"Mg/m^3",
     root_density    = fill(0.0, length(depths))u"m/m^3",
 )
 
 solar_model = SolarProblem()
+
+# Build the MicroModel once — it's constant across pixels. Only `site`
+# (per-pixel terrain) and `weather` (lapse-corrected per pixel) vary, and
+# both go on `MicroInputs` inside the per-pixel loop.
+model = MicroModel(;
+    days   = weather_july.days,
+    hours  = collect(0.0:1.0:23.0),
+    depths,
+    heights,
+    solar_model,
+    soil_properties_model,
+    soil_hydraulic_model,
+    vapour_pressure_equation = vp_method,
+    config = MicroConfig(;
+        convergence = SoilTemperatureConvergenceTolerance(;
+            tolerance = 0.1u"K", max_iterations_per_day = 5),
+        time_mode   = NonConsecutiveDayMode(; iterations_per_day = 5),
+    ),
+)
 
 # Lapse-correct temperature and humidity for a given elevation difference (Δz = pixel − center).
 # Humidity is adjusted by conserving actual vapour pressure (dry adiabatic approximation)
@@ -297,12 +316,8 @@ n_total                    = nx_utm * ny_utm
             atmospheric_pressure = pressure,
         )
 
-        result = simulate_microclimate(
-            site, soil_thermal, soil_hydraulics, weather_pixel;
-            depths, heights, solar_model,
+        result = simulate_microclimate(model, site, weather_pixel;
             initial_soil_temperature,
-            vapour_pressure_equation = vp_method,
-            iterate_day              = 5,
         )
 
         converged_midnight_profile[i, j] = collect(result.soil_temperature[1, :])

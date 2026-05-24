@@ -53,32 +53,39 @@ site = Site(;
     atmospheric_pressure = atmospheric_pressure(elevation),
 )
 
-depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
+depths  = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
+heights = [0.01, 2.0]u"m"  # 1 = near-ground, 2 = 2 m reference height
 
-soil_thermal = CampbelldeVriesSoilProperties(;
+# Organic litter cap on the top two soil nodes (NicheMapR `cap = 1` equivalent).
+n = length(depths)
+mineral_conductivity_vec  = fill(2.5u"W/m/K", n);  mineral_conductivity_vec[1:2]  .= 0.2u"W/m/K"
+mineral_heat_capacity_vec = fill(870.0u"J/kg/K", n); mineral_heat_capacity_vec[1:2] .= 1920.0u"J/kg/K"
+
+soil_properties_model = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor = 0.1,
-    mineral_conductivity  = 2.5u"W/m/K",
-    mineral_heat_capacity = 870.0u"J/kg/K",
+    mineral_conductivity  = mineral_conductivity_vec,
+    mineral_heat_capacity = mineral_heat_capacity_vec,
     recirculation_power   = 4.0,
     return_flow_threshold = 0.162,
 )
 
-soil_hydraulics = example_soil_hydraulics(depths;
+soil_hydraulic_model = example_soil_hydraulics(depths;
     bulk_density    = 1.3u"Mg/m^3",
     mineral_density = 2.56u"Mg/m^3",
     root_density    = fill(0.0, length(depths))u"m/m^3",
 )
 
-# ── Step 3: Solve microclimate ────────────────────────────────────────────
-# Heights [0.01, 2.0] m: index 1 = near-ground, index 2 = 2 m reference height.
+# ── Step 3: Build the model and solve microclimate ────────────────────────
 println("Solving microclimate...")
-micro_result = simulate_microclimate(
-    site, soil_thermal, soil_hydraulics, weather_scenario;
+model = MicroModel(;
+    days  = weather_scenario.days,
+    hours = collect(0.0:1.0:23.0),
     depths,
-    heights  = [0.01, 2.0]u"m",
-    runmoist = false,
-    organic_soil_cap = true,
+    heights,
+    soil_properties_model,
+    soil_hydraulic_model,
 )
+micro_result = simulate_microclimate(model, site, weather_scenario)
 
 # ── Step 4: Set up endotherm ──────────────────────────────────────────────
 # Default NicheMapR-equivalent parameters for a generic ~65 kg mammal with fur.

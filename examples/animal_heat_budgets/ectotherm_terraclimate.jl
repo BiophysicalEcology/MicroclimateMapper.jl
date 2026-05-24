@@ -58,15 +58,20 @@ site = Site(;
     atmospheric_pressure = atmospheric_pressure(elevation),
 )
 
-soil_thermal = CampbelldeVriesSoilProperties(;
+# Organic litter cap on the top two soil nodes (NicheMapR `cap = 1` equivalent).
+n = length(depths)
+mineral_conductivity_vec  = fill(2.5u"W/m/K", n);  mineral_conductivity_vec[1:2]  .= 0.2u"W/m/K"
+mineral_heat_capacity_vec = fill(870.0u"J/kg/K", n); mineral_heat_capacity_vec[1:2] .= 1920.0u"J/kg/K"
+
+soil_properties_model = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor = 0.1,
-    mineral_conductivity  = 2.5u"W/m/K",
-    mineral_heat_capacity = 870.0u"J/kg/K",
+    mineral_conductivity  = mineral_conductivity_vec,
+    mineral_heat_capacity = mineral_heat_capacity_vec,
     recirculation_power   = 4.0,
     return_flow_threshold = 0.162,
 )
 
-soil_hydraulics = example_soil_hydraulics(depths;
+soil_hydraulic_model = example_soil_hydraulics(depths;
     bulk_density    = 1.3u"Mg/m^3",
     mineral_density = 2.56u"Mg/m^3",
     root_density    = fill(0.0, length(depths))u"m/m^3",
@@ -89,37 +94,28 @@ function with_shade(w, shade_frac)
     merge(w, (; environment_daily = new_ed))
 end
 
-common_micro_kwargs = (;
+# Model is constant across shade variants — only the weather changes.
+model = MicroModel(;
+    days  = weather_scenario.days,
+    hours = collect(0.0:1.0:23.0),
     depths,
     heights,
-    runmoist         = false,
-    organic_soil_cap = true,
+    soil_properties_model,
+    soil_hydraulic_model,
 )
 
 println("Solving microclimate (0% shade)...")
-low_shade_result = simulate_microclimate(
-    site, soil_thermal, soil_hydraulics,
-    with_shade(weather_scenario, minimum_shade);
-    common_micro_kwargs...,
-)
+low_shade_result = simulate_microclimate(model, site, with_shade(weather_scenario, minimum_shade))
 
 using ProfileView
 using Cthulhu
 
 @time for i in 1:10
-low_shade_result = simulate_microclimate(
-    site, soil_thermal, soil_hydraulics,
-    with_shade(weather_scenario, minimum_shade);
-    common_micro_kwargs...,
-)
+low_shade_result = simulate_microclimate(model, site, with_shade(weather_scenario, minimum_shade))
 end
 
 println("Solving microclimate (90% shade)...")
-high_shade_result = simulate_microclimate(
-    site, soil_thermal, soil_hydraulics,
-    with_shade(weather_scenario, maximum_shade);
-    common_micro_kwargs...,
-)
+high_shade_result = simulate_microclimate(model, site, with_shade(weather_scenario, maximum_shade))
 
 available_environments = Microclimate.AvailableEnvironments(
     low_shade_result, high_shade_result, minimum_shade, maximum_shade, depths, heights

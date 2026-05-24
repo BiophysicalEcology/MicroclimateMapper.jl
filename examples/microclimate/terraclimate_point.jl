@@ -67,18 +67,24 @@ site = Site(;
 # Step 3: construct soil thermal and hydraulics models
 # ---------------------------------------------------------------------------
 # bulk_density and mineral_density now live on the hydraulics model — the
-# thermal model reads them through the energy-balance plumbing.
+# soil properties model reads them through the energy-balance plumbing.
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 
-soil_thermal = CampbelldeVriesSoilProperties(;
+# Organic litter cap: top two nodes get organic-soil thermal properties,
+# remaining nodes use the mineral defaults (NicheMapR `cap = 1` equivalent).
+n = length(depths)
+mineral_conductivity_vec  = fill(2.5u"W/m/K", n);  mineral_conductivity_vec[1:2]  .= 0.2u"W/m/K"
+mineral_heat_capacity_vec = fill(870.0u"J/kg/K", n); mineral_heat_capacity_vec[1:2] .= 1920.0u"J/kg/K"
+
+soil_properties_model = CampbelldeVriesSoilProperties(;
     de_vries_shape_factor   = 0.1,          # 0.33 for organic, 0.1 for mineral
-    mineral_conductivity    = 2.5u"W/m/K",
-    mineral_heat_capacity   = 870.0u"J/kg/K",
+    mineral_conductivity    = mineral_conductivity_vec,
+    mineral_heat_capacity   = mineral_heat_capacity_vec,
     recirculation_power     = 4.0,
     return_flow_threshold   = 0.162,
 )
 
-soil_hydraulics = example_soil_hydraulics(depths;
+soil_hydraulic_model = example_soil_hydraulics(depths;
     bulk_density    = 1.3u"Mg/m^3",
     mineral_density = 2.56u"Mg/m^3",
     root_density    = fill(0.0, length(depths))u"m/m^3",
@@ -96,20 +102,32 @@ weather_scenario = apply_climate_scenario(Historical, weather, lon, lat)
 # weather_scenario = apply_climate_scenario(TerraClimate{Plus4C}, weather, lon, lat; ystart = 2000)
 
 # ---------------------------------------------------------------------------
-# Step 5: simulate
+# Step 5: build the model and simulate
 # ---------------------------------------------------------------------------
-result = simulate_microclimate(
-    site,
-    soil_thermal,
-    soil_hydraulics,
-    weather_scenario;
+# Prescribed soil moisture comes from the monthly weather data, expanded to
+# (ndepths × nmonths). Swap to `DynamicSoilMoisture(; ...)` to solve moisture
+# at each hourly timestep instead.
+precomputed_soil_moisture = let sm = get(weather_scenario, :soil_moisture_monthly, nothing)
+    isnothing(sm) ? nothing : repeat(sm', length(depths), 1)
+end
+
+model = MicroModel(;
+    days   = weather_scenario.days,
+    hours  = collect(0.0:1.0:23.0),
     depths,
-    heights                  = [0.01, 2.0]u"m",
-    runmoist                 = false,
-    clearsky                 = false,
-    organic_soil_cap         = true,
-    vapour_pressure_equation = GoffGratch(),
+    heights = [0.01, 2.0]u"m",
+    soil_properties_model,
+    soil_hydraulic_model,
+    vapour_pressure_equation = GoffGratch(),  # swap to Teten() or Huang()
+    config = MicroConfig(;
+        time_mode              = NonConsecutiveDayMode(; iterations_per_day = 10),
+        convergence            = SoilTemperatureConvergenceTolerance(;
+            tolerance = 0.1u"K", max_iterations_per_day = 10),
+        soil_moisture_strategy = PrescribedSoilMoisture(; precomputed_soil_moisture),
+    ),
 )
+
+result = simulate_microclimate(model, site, weather_scenario; clearsky = false)
 
 # Quick inspection of outputs
 soil_T = result.soil_temperature          # Matrix (timesteps × depths) in K
@@ -120,65 +138,44 @@ air_T  = result.profile.air_temperature  # Matrix (timesteps × heights) in K
 # # ---------------------------------------------------------------------------
 # # Sensitivity: swap vapour pressure equation
 # # The method must be set consistently in get_weather (humidity lapse correction),
-# # apply_climate_scenario (scenario humidity adjustment), and simulate_microclimate
+# # apply_climate_scenario (scenario humidity adjustment), and the MicroModel
 # # (boundary-layer and soil-energy calculations).
 # # ---------------------------------------------------------------------------
 # vp = Huang()   # faster than GoffGratch(); also try Teten() for maximum speed
 # weather_huang = get_weather(TerraClimate, lon, lat;
-#     ystart = 2000,
-#     elevation,
-#     vapour_pressure_method = vp,
+#     ystart = 2000, elevation, vapour_pressure_method = vp,
 # )
 # scenario_huang = apply_climate_scenario(Historical, weather_huang, lon, lat;
 #     vapour_pressure_method = vp,
 # )
-# result_huang = simulate_microclimate(
-#     site, soil_thermal, soil_hydraulics, scenario_huang;
-#     depths,
-#     heights                  = [0.01, 2.0]u"m",
-#     runmoist                 = false,
-#     clearsky                 = false,
-#     organic_soil_cap         = true,
-#     vapour_pressure_equation = vp,
-# )
-# result = result_huang
+# model_huang = ConstructionBase.setproperties(model; vapour_pressure_equation = vp)
+# result_huang = simulate_microclimate(model_huang, site, scenario_huang)
 
 # # ---------------------------------------------------------------------------
-# # Sensitivity: dry adiabatic lapse rate
+# # Sensitivity: dry adiabatic lapse rate (only weather changes; model unchanged)
 # # ---------------------------------------------------------------------------
 # weather_dry = get_weather(TerraClimate, lon, lat;
-#     ystart = 2000,
-#     elevation,
+#     ystart = 2000, elevation,
 #     lapse_rate_type        = DryAdiabaticLapseRate(),
 #     vapour_pressure_method = GoffGratch(),
 # )
 # scenario_dry = apply_climate_scenario(Historical, weather_dry, lon, lat;
 #     vapour_pressure_method = GoffGratch(),
 # )
-# result_dry = simulate_microclimate(
-#     site, soil_thermal, soil_hydraulics, scenario_dry;
-#     depths,
-#     heights                  = [0.01, 2.0]u"m",
-#     vapour_pressure_equation = GoffGratch(),
-# )
+# result_dry = simulate_microclimate(model, site, scenario_dry)
 
 # # ---------------------------------------------------------------------------
-# # Multi-year run (2000–2002)
+# # Multi-year run (2000–2002) — rebuild the model with the longer day vector
 # # ---------------------------------------------------------------------------
 # weather_3yr = get_weather(TerraClimate, lon, lat;
-#     ystart = 2000, yfinish = 2002,
-#     elevation,
+#     ystart = 2000, yfinish = 2002, elevation,
 #     vapour_pressure_method = GoffGratch(),
 # )
 # scenario_3yr = apply_climate_scenario(Historical, weather_3yr, lon, lat;
 #     vapour_pressure_method = GoffGratch(),
 # )
-# result_3yr = simulate_microclimate(
-#     site, soil_thermal, soil_hydraulics, scenario_3yr;
-#     depths,
-#     heights                  = [0.01, 2.0]u"m",
-#     vapour_pressure_equation = GoffGratch(),
-# )
+# model_3yr = ConstructionBase.setproperties(model; days = scenario_3yr.days)
+# result_3yr = simulate_microclimate(model_3yr, site, scenario_3yr)
 # @show size(result_3yr.soil_temperature)  # should be (36*24, ndepths)
 
 # ---------------------------------------------------------------------------
