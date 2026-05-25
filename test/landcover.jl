@@ -1,7 +1,7 @@
 using Test
 using BiophysicalGrids
 using BiophysicalGrids: landcover_weighted
-using Rasters, Rasters.Lookups
+using Rasters
 using Rasters: X, Y, RasterStack
 using Unitful
 
@@ -9,9 +9,9 @@ using Unitful
 xy_dims() = (X(0.0:1.0:2.0), Y(0.0:1.0:2.0))
 
 @testset "fractional landcover_weighted" begin
-    # 3×3 grid with two classes. `forest` weight 0.1, `grass` weight 0.3.
-    # Fractions sum to 100 in most pixels; one row is 50/50 so weighted
-    # albedo there should be the midpoint.
+    # 3×3 grid with two classes. Most pixels sum to 100 % (pure class
+    # or 50/50 mix). Row 2 has under-100 totals so we can verify the
+    # per-pixel renormalisation step.
     forest = Raster(Float64[
         100  100   50
          50   50   25
@@ -19,7 +19,7 @@ xy_dims() = (X(0.0:1.0:2.0), Y(0.0:1.0:2.0))
     ], xy_dims(); name = :forest)
     grass = Raster(Float64[
           0    0   50
-         50   50   75
+         30   50   75
         100  100  100
     ], xy_dims(); name = :grass)
     stack = RasterStack((; forest, grass))
@@ -28,12 +28,12 @@ xy_dims() = (X(0.0:1.0:2.0), Y(0.0:1.0:2.0))
     # 3rd argument is the landcover source — ignored for fractional stacks.
     out = landcover_weighted(stack, weights, nothing)
     @test size(out) == (3, 3)
-    @test out[1, 1] ≈ 0.10                  # pure forest
-    @test out[3, 1] ≈ 0.30                  # pure grass
-    @test out[1, 3] ≈ (50*0.10 + 50*0.30) / 100  # 50/50 mix
+    @test out[1, 1] ≈ 0.10                       # pure forest
+    @test out[3, 1] ≈ 0.30                       # pure grass
+    @test out[1, 3] ≈ (50*0.10 + 50*0.30) / 100  # 50/50 mix, sums to 100
 
-    # Renormalises when fractions don't sum to 100.
-    @test out[2, 1] ≈ (50*0.10 + 50*0.30) / 100   # totals 100
+    # Under-100 sum: forest=50, grass=30 → renormalise by 80.
+    @test out[2, 1] ≈ (50*0.10 + 30*0.30) / 80
 
     # Units propagate through (roughness lengths in metres).
     weights_m = (forest = 1.0u"m", grass = 0.05u"m")

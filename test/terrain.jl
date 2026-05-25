@@ -2,11 +2,10 @@ using Test
 using BiophysicalGrids
 using BiophysicalGrids: compute_terrain_grids
 using Rasters, Rasters.Lookups
-using Rasters: X, Y, Dim, RasterStack
+using Rasters: X, Y
 using GeoFormatTypes
 import Proj   # activates Rasters' ProjExt so cellarea / reproject work
 using Unitful
-using StaticArrays: SVector
 
 # Manhattan / UTM-ish grid: 100 m cells, "Projected" CRS WKT for a generic
 # UTM zone. We only need slope/aspect/horizon math, not a particular zone.
