@@ -1,29 +1,41 @@
-# landcover.jl — load fractional land-cover data and derive per-pixel
-# `surface_albedo` and `roughness_height` from it.
+# landcover.jl — load fractional or categorical land-cover data and derive
+# per-pixel `surface_albedo` and `roughness_height` from it.
 #
-# Per-class property tables (albedo, roughness length) are **attached to
-# the dataset type** via dispatch. EarthEnv's 12-class consensus taxonomy
-# is one specific classification; ESA WorldCover, MODIS MCD12, etc. have
-# different class sets and would each ship their own table next to their
-# own load dispatch.
+# Per-class property tables (albedo, roughness length) are attached to the
+# dataset type via dispatch. EarthEnv's 12-class consensus taxonomy is one
+# specific classification; MODIS's MCD12Q1 (IGBP 17-class) is another;
+# ESA WorldCover, etc. each ship their own table next to their own loader.
+#
+# Two physical layouts are supported:
+#   * **Fractional**  — a `RasterStack` with one 0-100 layer per class
+#                       (EarthEnv consensus, MOD44B vegetation continuous fields).
+#   * **Categorical** — a single `Raster` of integer class codes per pixel
+#                       (MODIS MCD12Q1). Categorical sources also declare a
+#                       `landcover_class_codes` mapping from class name to
+#                       integer code.
+#
+# Dispatch on the loaded landcover's type (`RasterStack` vs `Raster`)
+# selects the right weighted-aggregation path inside `_resolve_surface_property`.
 #
 # ! PLACEHOLDER VALUES — NOT YET VERIFIED.
-# The numbers in `landcover_albedo_table(::EarthEnv{LandCover})` and
-# `landcover_roughness_table(::EarthEnv{LandCover})` below are
-# ball-park estimates from general biophysical-modelling knowledge.
-# They are NOT pulled from a specific published source. Before relying
-# on them for science, replace each value with a citation-backed number
-# (broadband shortwave albedo per land-cover class; aerodynamic
-# roughness length `z₀` per land-cover class). Otherwise the surface
-# parameterisation is junk.
+# The albedo and roughness numbers in this file and in `modis.jl` are
+# ball-park estimates from general biophysical-modelling knowledge, not
+# from a specific published source. Replace with citation-backed values
+# (broadband shortwave albedo per class; aerodynamic roughness length `z₀`
+# per class) before using for science.
+
+# ---------------------------------------------------------------------------
+# Source-extension points
+# ---------------------------------------------------------------------------
 
 """
     default_landcover_albedo(::Type{<:LandcoverDataset}) -> NamedTuple
 
 Default per-class broadband surface albedo for the given land-cover
-dataset type. Keys must match the layer keys returned by `load_landcover`
-for the same dataset. Users can override by passing their own
-class→albedo NamedTuple to `microclimate_grid`'s `surface_albedo` kwarg.
+dataset type. Keys must match the class names of that dataset (also used
+as the keys of `landcover_class_codes` for categorical sources). Users
+can override by passing their own class→albedo NamedTuple to
+`microclimate_grid`'s `surface_albedo` kwarg.
 """
 function default_landcover_albedo end
 
@@ -31,97 +43,80 @@ function default_landcover_albedo end
     default_landcover_roughness(::Type{<:LandcoverDataset}) -> NamedTuple
 
 Default per-class aerodynamic roughness length `z₀` (length units) for
-the given land-cover dataset type. Users can override by passing their
-own class→roughness NamedTuple to `microclimate_grid`'s
-`roughness_height` kwarg.
+the given land-cover dataset type. Same keying as
+`default_landcover_albedo`. Users can override by passing their own
+class→roughness NamedTuple to `microclimate_grid`'s `roughness_height`
+kwarg.
 """
 function default_landcover_roughness end
 
-# ---------------------------------------------------------------------------
-# EarthEnv consensus 12-class land cover
-# ---------------------------------------------------------------------------
+"""
+    load_landcover(::Type{<:LandcoverDataset}, area::Extent)
+        -> RasterStack OR Raster
 
-const _EARTHENV_LANDCOVER_KEYS = (
-    :needleleaf_trees, :evergreen_broadleaf_trees, :deciduous_broadleaf_trees,
-    :other_trees, :shrubs, :herbaceous, :cultivated_and_managed,
-    :regularly_flooded, :urban_builtup, :snow_ice, :barren, :open_water,
-)
-
-default_landcover_albedo(::Type{<:EarthEnv{<:LandCover}}) = (
-    needleleaf_trees          = 0.09,
-    evergreen_broadleaf_trees = 0.13,
-    deciduous_broadleaf_trees = 0.16,
-    other_trees               = 0.13,
-    shrubs                    = 0.20,
-    herbaceous                = 0.23,
-    cultivated_and_managed    = 0.20,
-    regularly_flooded         = 0.12,
-    urban_builtup             = 0.15,
-    snow_ice                  = 0.70,
-    barren                    = 0.30,
-    open_water                = 0.06,
-)
-
-default_landcover_roughness(::Type{<:EarthEnv{<:LandCover}}) = (
-    needleleaf_trees          = 1.0u"m",
-    evergreen_broadleaf_trees = 2.0u"m",
-    deciduous_broadleaf_trees = 1.5u"m",
-    other_trees               = 1.2u"m",
-    shrubs                    = 0.10u"m",
-    herbaceous                = 0.03u"m",
-    cultivated_and_managed    = 0.05u"m",
-    regularly_flooded         = 0.05u"m",
-    urban_builtup             = 1.0u"m",
-    snow_ice                  = 0.001u"m",
-    barren                    = 0.005u"m",
-    open_water                = 0.0002u"m",
-)
+Per-source loader. Fractional sources return a `RasterStack` with one
+0-100 layer per class (keyed by class name). Categorical sources return
+a single `Raster` of integer class codes — those sources must also
+implement `landcover_class_codes`.
+"""
+function load_landcover end
 
 """
-    load_landcover(::Type{<:EarthEnv{<:LandCover}}, area::Extent) -> RasterStack
+    landcover_class_codes(::Type{<:LandcoverDataset}) -> NamedTuple
 
-Load every EarthEnv land-cover fractional class for `area`, lazy-read each
-tile and crop to `area` before materialising. Layer names match
-`_EARTHENV_LANDCOVER_KEYS`.
+For categorical sources (where `load_landcover` returns a single
+integer-coded `Raster`), declare the mapping from class name (the key
+used in albedo/roughness NamedTuples) to the integer code that appears
+in the loaded raster. Not used by fractional sources.
 """
-function load_landcover(::Type{T}, area::Extent) where {T<:EarthEnv{<:LandCover}}
-    layers = map(_EARTHENV_LANDCOVER_KEYS) do name
-        path = getraster(T, name)
-        read(crop(Raster(path; lazy = true); to = area, touches = true))
-    end
-    return RasterStack(NamedTuple{_EARTHENV_LANDCOVER_KEYS}(layers))
-end
+function landcover_class_codes end
 
 # ---------------------------------------------------------------------------
 # Per-pixel weighted property derivation
 # ---------------------------------------------------------------------------
 
 """
-    landcover_weighted(stack, weights) -> Array
+    landcover_weighted(stack::RasterStack, weights::NamedTuple, _source) -> Raster
 
-Per-pixel fraction-weighted sum of the layers in `stack`, with `weights[k]`
-giving the value to associate with class `k`. Layer fractions are 0–100
-(consensus percent), so the result is divided by the per-pixel total to
-renormalise (some pixels don't sum to exactly 100).
+Per-pixel fraction-weighted sum of the layers in `stack`. `weights[name]`
+gives the value to associate with class `name`; layer fractions are 0-100
+(consensus percent), so the result is renormalised by the per-pixel total
+(some pixels don't sum to exactly 100). The `source` argument is ignored —
+present only so categorical and fractional dispatch share one signature.
 """
-function landcover_weighted(stack::RasterStack, weights)
-    layer_keys = keys(weights)
-    layer_arrays = map(name -> parent(stack[name]), layer_keys)
-    layer_weights = map(name -> weights[name], layer_keys)
-    nx, ny = size(first(layer_arrays))
-    out = similar(first(layer_arrays), typeof(first(layer_weights)), nx, ny)
-    @inbounds for j in 1:ny, i in 1:nx
-        total = zero(eltype(first(layer_arrays)))
-        acc = zero(typeof(first(layer_weights)))
-        ntuple(length(layer_keys)) do k
-            f = layer_arrays[k][i, j]
-            total += f
-            acc += f * layer_weights[k]
-            nothing
-        end
-        out[i, j] = total > 0 ? acc / total : layer_weights[1]
+function landcover_weighted(stack::RasterStack{K}, weights::NamedTuple, _source) where K
+    # Reorder/subset weights to match the stack's layer order so per-pixel
+    # NamedTuples and weight NamedTuples align positionally.
+    aligned_weights = NamedTuple{K}(weights)
+    fallback        = first(aligned_weights)
+    return map(stack) do fractions
+        total = sum(fractions)
+        iszero(total) ? fallback : sum(map(*, fractions, aligned_weights)) / total
     end
-    return out
+end
+"""
+    landcover_weighted(raster::Raster, weights::NamedTuple, source) -> Raster
+
+Per-pixel lookup for a categorical (integer-coded) landcover raster.
+`landcover_class_codes(source)[name]` gives the integer code that represents
+class `name` in `raster`; `weights[name]` gives the value to assign to that
+class. Pixels whose code isn't in the mapping get the first weight as a
+fallback.
+"""
+function landcover_weighted(raster::Raster, weights::NamedTuple, source)
+    codes    = landcover_class_codes(source)
+    fallback = first(values(weights))
+    # Code→weight as a flat array indexed by `code + 1` (codes can be 0).
+    max_code = maximum(values(codes))
+    weight_by_code = fill(fallback, max_code + 1)
+    for name in keys(weights)
+        haskey(codes, name) || continue
+        weight_by_code[codes[name] + 1] = weights[name]
+    end
+    return map(raster) do value
+        code = Int(value)
+        (0 <= code <= max_code) ? weight_by_code[code + 1] : fallback
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -139,32 +134,46 @@ end
 #   - a `Raster` → resampled to the weather template; ignores
 #     `landcover_source`.
 
-# Scalar / unrecognised value: broadcast as a `Fill`.
+# Scalar / unrecognised value: broadcast as a `Fill` wrapped in a Raster
+# carrying the template's X/Y dims so downstream `[X(i), Y(j)]` indexing
+# stays uniform across all branches.
 _resolve_surface_property(value, landcover_source, template, area, default_fn) =
-    Fill(value, size(template, X), size(template, Y))
-
+    Raster(Fill(value, size(template, X), size(template, Y)), dims(template, (X, Y)))
 # User-supplied `Raster`: resample to weather template.
 _resolve_surface_property(r::Raster, _, template, _, _) =
-    parent(Rasters.resample(r; to = template))
-
+    Rasters.resample(r; to=template)
 # `nothing` → dispatch the default class→property NamedTuple for the
 # landcover source, then load + weight.
 _resolve_surface_property(::Nothing, landcover_source, template, area, default_fn) =
     _resolve_surface_property(default_fn(landcover_source), landcover_source,
                               template, area, default_fn)
-
 _resolve_surface_property(::Nothing, ::Nothing, _, _, default_fn) =
     error("`$(default_fn)`: no value supplied. Pass a `landcover_source` " *
-          "(e.g. `EarthEnv{LandCover}`), or a scalar / Raster / NamedTuple " *
-          "for the corresponding surface kwarg.")
-
-# A class→property `NamedTuple` (either the default looked up above or a
-# user-supplied override) + a `landcover_source` dataset type.
+          "(e.g. `EarthEnv{LandCover}`, `MODIS{MCD12Q1}`), or a scalar / " *
+          "Raster / NamedTuple for the corresponding surface kwarg.")
+# A class→property `NamedTuple` + any landcover source type. Dispatch is
+# uniform: load whatever `load_landcover` returns, hand it to the
+# resolution-specific weighted aggregator, wrap as a Raster, resample.
 function _resolve_surface_property(
-    weights::NamedTuple, ::Type{T}, template, area, _,
-) where {T<:EarthEnv{<:LandCover}}
-    stack = load_landcover(T, area)
-    weighted_native = landcover_weighted(stack, weights)
-    weighted = Raster(weighted_native, dims(first(values(stack))))
-    return parent(Rasters.resample(weighted; to = template))
+    weights::NamedTuple,
+    source::Type{<:RasterDataSources.RasterDataSource},
+    template, area, _,
+)
+    landcover       = load_landcover(source, area)
+    weighted_native = landcover_weighted(landcover, weights, source)
+    return _resample_to_template(weighted_native, commondims(landcover, (X(), Y())), template)
 end
+
+# Resample a weighted-property array onto the weather `template`. GDAL
+# can't write Unitful `Quantity` arrays, so for unit-tagged inputs (e.g.
+# roughness in `u"m"`) we strip the unit, resample, then re-attach.
+# Returns a `Raster` so downstream callers can index with dim wrappers.
+@inline _resample_to_template(values, spatial_dims, template) =
+    Rasters.resample(Raster(values, spatial_dims); to = template)
+@inline function _resample_to_template(values::AbstractArray{<:Quantity}, spatial_dims, template)
+    value_unit = unit(eltype(values))
+    stripped   = ustrip.(value_unit, values)
+    resampled  = Rasters.resample(Raster(stripped, spatial_dims); to = template)
+    return rebuild(resampled, parent(resampled) .* value_unit)
+end
+
