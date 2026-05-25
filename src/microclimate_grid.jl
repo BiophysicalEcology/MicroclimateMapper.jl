@@ -41,55 +41,6 @@ const _DEFAULT_OUTPUT_LAYERS = (
     LayerSpec(:sky_temperature,   :scalar),
 )
 
-function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple)
-    xy = dims(terrain, (X, Y))
-    ti = Ti(1:length(model.days) * length(model.hours))
-    extra = (
-        soil    = (ti, Dim{:depth}(model.depths)),
-        profile = (ti, Dim{:height}(model.heights)),
-        scalar  = (ti,),
-    )
-    return RasterStack(NamedTuple(map(layers) do spec
-        _layer_name(spec) => _allocate_layer(proto, spec, xy, extra)
-    end))
-end
-
-function _allocate_layer(proto, spec::LayerSpec{<:Any, K}, xy, extra) where K
-    T = typeof(first(_layer_source(proto, spec)))
-    ds = (xy..., extra[K]...)
-    return Raster(zeros(T, map(length, ds)...), ds)
-end
-
-# `I` is a tuple of dim selectors (`(X(i), Y(j))` from `DimIndices`), so the
-# spatial axes are addressed by name and the storage order of `rast` is
-# irrelevant. The trailing `Ti`/extra-dim selectors target the time and
-# depth/height axes we constructed in `_allocate_layer`.
-@inline function _write_slice!(rast::AbstractArray{<:Any,3}, src::AbstractVector, I::Tuple)
-    @inbounds for t in eachindex(src)
-        rast[I..., Ti(t)] = src[t]
-    end
-    return nothing
-end
-@inline function _write_slice!(rast::AbstractArray{<:Any,4}, src::AbstractMatrix, I::Tuple)
-    # All four indices wrapped as dims so DimensionalData's setindex dispatches
-    # without ambiguity. The trailing dim is `Dim{:depth}` for soil layers and
-    # `Dim{:height}` for profile layers — extract its base type from the raster
-    # itself so this method handles both kinds.
-    extra_dim = basetypeof(last(dims(rast)))
-    @inbounds for d in axes(src, 2), t in axes(src, 1)
-        rast[I..., Ti(t), extra_dim(d)] = src[t, d]
-    end
-    return nothing
-end
-
-@inline function _write_output!(output, result, layers::Tuple, I::Tuple)
-    unrolled_map(layers) do spec
-        _write_slice!(output[_layer_name(spec)], _layer_source(result, spec), I)
-        nothing
-    end
-    return nothing
-end
-
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -149,9 +100,11 @@ function microclimate_grid(
     # TODO: initial conditions should come from a climatology source.
     init = (soil_temperature = nothing,
             soil_moisture = fill(0.42 * 0.25, length(model.depths))),
+    # TODO: how to better group these
     surface_albedo = nothing,
     roughness_height = nothing,
     output_layers = _DEFAULT_OUTPUT_LAYERS,
+    # TODO: this is a model component, should we have a composite model?
     lapse_rate_type::LapseRate = EnvironmentalLapseRate(),
 )
     # Use the coarser-resolution source as the template and resample the
@@ -266,4 +219,53 @@ function microclimate_grid(
         end
     end
     return output
+end
+
+function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple)
+    xy = dims(terrain, (X, Y))
+    ti = Ti(1:length(model.days) * length(model.hours))
+    extra = (
+        soil    = (ti, Dim{:depth}(model.depths)),
+        profile = (ti, Dim{:height}(model.heights)),
+        scalar  = (ti,),
+    )
+    return RasterStack(NamedTuple(map(layers) do spec
+        _layer_name(spec) => _allocate_layer(proto, spec, xy, extra)
+    end))
+end
+
+function _allocate_layer(proto, spec::LayerSpec{<:Any, K}, xy, extra) where K
+    T = typeof(first(_layer_source(proto, spec)))
+    ds = (xy..., extra[K]...)
+    return Raster(zeros(T, map(length, ds)...), ds)
+end
+
+# `I` is a tuple of dim selectors (`(X(i), Y(j))` from `DimIndices`), so the
+# spatial axes are addressed by name and the storage order of `rast` is
+# irrelevant. The trailing `Ti`/extra-dim selectors target the time and
+# depth/height axes we constructed in `_allocate_layer`.
+@inline function _write_slice!(rast::AbstractArray{<:Any,3}, src::AbstractVector, I::Tuple)
+    @inbounds for t in eachindex(src)
+        rast[I..., Ti(t)] = src[t]
+    end
+    return nothing
+end
+@inline function _write_slice!(rast::AbstractArray{<:Any,4}, src::AbstractMatrix, I::Tuple)
+    # All four indices wrapped as dims so DimensionalData's setindex dispatches
+    # without ambiguity. The trailing dim is `Dim{:depth}` for soil layers and
+    # `Dim{:height}` for profile layers — extract its base type from the raster
+    # itself so this method handles both kinds.
+    extra_dim = basetypeof(last(dims(rast)))
+    @inbounds for d in axes(src, 2), t in axes(src, 1)
+        rast[I..., Ti(t), extra_dim(d)] = src[t, d]
+    end
+    return nothing
+end
+
+@inline function _write_output!(output, result, layers::Tuple, I::Tuple)
+    unrolled_map(layers) do spec
+        _write_slice!(output[_layer_name(spec)], _layer_source(result, spec), I)
+        nothing
+    end
+    return nothing
 end
