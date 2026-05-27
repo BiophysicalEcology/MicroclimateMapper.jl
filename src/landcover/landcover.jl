@@ -123,8 +123,8 @@ end
 # Surface property resolution
 # ---------------------------------------------------------------------------
 #
-# `surface_albedo` and `roughness_height` kwargs of `microclimate_grid`
-# accept these forms (`prop` below):
+# The `surface_albedo_source` / `roughness_height_source` fields on
+# `MicroMapModel` accept these forms:
 #   - `nothing` → use the dataset's default class→property NamedTuple
 #     (looked up via `default_fn(landcover_source)`); requires
 #     `landcover_source` to be a land-cover dataset type.
@@ -133,6 +133,8 @@ end
 #   - a scalar → broadcast to every pixel; ignores `landcover_source`.
 #   - a `Raster` → resampled to the weather template; ignores
 #     `landcover_source`.
+#   - a `Type{<:RasterDataSource}` → load a property raster directly from
+#     that dataset, resample. No landcover weighting.
 
 # Scalar / unrecognised value: broadcast as a `Fill` wrapped in a Raster
 # carrying the template's X/Y dims so downstream `[X(i), Y(j)]` indexing
@@ -149,8 +151,8 @@ _resolve_surface_property(::Nothing, landcover_source, template, area, default_f
                               template, area, default_fn)
 _resolve_surface_property(::Nothing, ::Nothing, _, _, default_fn) =
     error("`$(default_fn)`: no value supplied. Pass a `landcover_source` " *
-          "(e.g. `EarthEnv{LandCover}`, `MODIS{MCD12Q1}`), or a scalar / " *
-          "Raster / NamedTuple for the corresponding surface kwarg.")
+          "(e.g. `EarthEnv{LandCover}`, `MODIS{MCD12Q1}`), a `Type{<:RasterDataSource}` " *
+          "for the property itself, or a scalar / Raster / NamedTuple.")
 # A class→property `NamedTuple` + any landcover source type. Dispatch is
 # uniform: load whatever `load_landcover` returns, hand it to the
 # resolution-specific weighted aggregator, wrap as a Raster, resample.
@@ -163,6 +165,28 @@ function _resolve_surface_property(
     weighted_native = landcover_weighted(landcover, weights, source)
     return _resample_to_template(weighted_native, commondims(landcover, (X(), Y())), template)
 end
+# A `Type{<:RasterDataSource}` is the property *source* itself (not
+# landcover): load a 2-D Raster from that dataset and resample. Ignores
+# `landcover_source`. Each dataset that supports being used this way
+# implements `load_surface_property(source, area)`.
+function _resolve_surface_property(
+    source::Type{<:RasterDataSources.RasterDataSource},
+    _landcover_source, template, area, _default_fn,
+)
+    raster = load_surface_property(source, area)
+    return Rasters.resample(raster; to = template)
+end
+
+"""
+    load_surface_property(::Type{<:RasterDataSource}, area::Extent) -> Raster
+
+Per-source loader for surface properties (broadband albedo, roughness
+length, …) used when a `MicroMapModel.surface_albedo_source` or
+`.roughness_height_source` is set to a `Type{<:RasterDataSource}` directly
+(no landcover weighting). The returned `Raster` must be unit-tagged in the
+canonical units (`Float64` for albedo, `u"m"` for roughness length).
+"""
+function load_surface_property end
 
 # Resample a weighted-property array onto the weather `template`. GDAL
 # can't write Unitful `Quantity` arrays, so for unit-tagged inputs (e.g.

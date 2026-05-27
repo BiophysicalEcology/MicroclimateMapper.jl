@@ -650,7 +650,8 @@ function assemble_weather!(
     site, I::Tuple;
     grid_elevation = site.elevation,
     vapour_pressure_method = GoffGratch(),
-    lapse_rate_type::LapseRate = EnvironmentalLapseRate(),
+    lapse_rate_model::LapseRate = EnvironmentalLapseRate(),
+    canonical_overrides::NamedTuple = (;),
 )
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
@@ -658,13 +659,14 @@ function assemble_weather!(
     spy          = steps_per_year(temporal_resolution(source))
 
     ctx = (;
-        site, grid_elevation, lapse_rate_type, vapour_pressure_method,
+        site, grid_elevation, lapse_rate_model, vapour_pressure_method,
         atmospheric_pressure = atm_pressure, scratch,
         steps_per_year = spy,
     )
 
     _read_native!(buffers, weather, variables, I)
-    _run_derivations!(buffers, ctx, source, variables)
+    _run_derivations!(buffers, ctx, source, variables, canonical_overrides)
+    _apply_canonical_overrides!(buffers, canonical_overrides, I)
 
     environment_hourly = _finalize_environment_hourly(buffers, variables, atm_pressure)
 
@@ -714,10 +716,53 @@ end
 # Derivation driver
 # ---------------------------------------------------------------------------
 
-@inline function _run_derivations!(buffers, ctx, source, variables::Tuple)
+@inline function _run_derivations!(buffers, ctx, source, variables::Tuple,
+                                   overrides::NamedTuple = (;))
     unrolled_map(weather_derivations(source)) do v
-        _is_native(v, variables) || derive!(v, buffers, ctx)
+        skip = _is_native(v, variables) || _is_override(v, overrides)
+        skip || derive!(v, buffers, ctx)
         nothing
+    end
+    return nothing
+end
+
+# True iff the canonical variable named `N` has a user-supplied override
+# raster — checked at compile time via the NamedTuple's `K` parameter so
+# the result folds into the derivation skip.
+@inline _is_override(::Val{N}, ::NamedTuple{K}) where {N, K} = N in K
+
+# Apply per-canonical-variable user overrides. Runs after derivations so
+# overrides win even if the source provides the variable natively.
+@inline function _apply_canonical_overrides!(buffers, overrides::NamedTuple{K}, I) where K
+    unrolled_map(K) do name
+        _apply_one_override!(buffers, name, getproperty(overrides, name), I)
+        nothing
+    end
+    return nothing
+end
+@inline _apply_canonical_overrides!(_, ::NamedTuple{()}, _) = nothing
+
+@inline function _apply_one_override!(buffers, name::Symbol, raster, I)
+    target = getproperty(buffers, name)
+    _copy_override!(target, raster, I)
+    return nothing
+end
+
+# 2D override (constant in time): broadcast a scalar across the canonical
+# buffer.
+@inline function _copy_override!(target::AbstractVector,
+                                 raster::AbstractArray{<:Any, 2}, I)
+    value = raster[I...]
+    @inbounds for k in eachindex(target)
+        target[k] = value
+    end
+    return nothing
+end
+# 3D override: per-timestep slice.
+@inline function _copy_override!(target::AbstractVector,
+                                 raster::AbstractArray{<:Any, 3}, I)
+    @inbounds for k in eachindex(target)
+        target[k] = raster[I..., Ti(k)]
     end
     return nothing
 end
@@ -746,12 +791,12 @@ function derive!(::Val{:reference_temperature_min}, buffers, ctx)
 end
 
 @inline function _lapse_correct!(out, src, ctx)
-    (; site, grid_elevation, lapse_rate_type) = ctx
+    (; site, grid_elevation, lapse_rate_model) = ctx
     Δz = site.elevation - grid_elevation
     if iszero(Δz)
         @. out = src
     else
-        @. out = lapse_adjust_temperature(lapse_rate_type, src, Δz)
+        @. out = lapse_adjust_temperature(lapse_rate_model, src, Δz)
     end
     return nothing
 end

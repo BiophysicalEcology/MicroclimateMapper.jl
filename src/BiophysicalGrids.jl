@@ -23,6 +23,7 @@ using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 # `using ZarrDatasets` themselves in their script.
 using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup
+using Rasters.Lookups: Intervals, Center
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
 using Rasters.Extents: Extent
@@ -94,7 +95,14 @@ export
     example_soil_hydraulic_model,
     example_soil_properties_model,
     example_soil_profile,
-    microclimate_grid
+    # Grid microclimate
+    MicroMapModel,
+    MicroMapProblem,
+    MicroMapCache,
+    solve,
+    solve!,
+    init,
+    reinit!
 
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
@@ -110,6 +118,6 @@ include("climate/worldclim.jl")
 include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
-include("microclimate_grid.jl")
+include("micro_map.jl")
 
 end
