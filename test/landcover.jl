@@ -1,6 +1,6 @@
 using Test
-using BiophysicalGrids
-using BiophysicalGrids: landcover_weighted
+using MicroclimateMapper
+using MicroclimateMapper: landcover_weighted
 using Rasters
 using Rasters: X, Y, RasterStack
 using Unitful
@@ -96,7 +96,7 @@ end
 
     # Categorical sources additionally need a class→code mapping with
     # exactly the same keys.
-    codes = BiophysicalGrids.landcover_class_codes(MODIS{MCD12Q1})
+    codes = MicroclimateMapper.landcover_class_codes(MODIS{MCD12Q1})
     @test keys(codes) == keys(default_landcover_albedo(MODIS{MCD12Q1}))
     @test all(c -> c isa Integer, values(codes))
 end

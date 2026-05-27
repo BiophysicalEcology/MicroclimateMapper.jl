@@ -1,6 +1,6 @@
 using Test
-using BiophysicalGrids
-using BiophysicalGrids: _canonical_data, _is_special_key
+using MicroclimateMapper
+using MicroclimateMapper: _canonical_data, _is_special_key, _resolve_init, _DEFAULT_INIT
 using Microclimate: example_microclimate_problem
 using Rasters
 using Rasters: X, Y, Ti
@@ -14,6 +14,21 @@ using Unitful
     for k in (:vapour_pressure_deficit, :mean_temperature, :foo)
         @test !_is_special_key(k)
     end
+end
+
+@testset "_resolve_init" begin
+    # nothing → full default NamedTuple with every field nothing
+    nt = _resolve_init(nothing, nothing)
+    @test nt === _DEFAULT_INIT
+    @test nt.soil_temperature === nothing
+    @test nt.snow_depth === nothing
+
+    # user NamedTuple wins, missing keys filled from defaults
+    user = (; snow_depth = 30.0u"cm")
+    merged = _resolve_init(user, nothing)
+    @test merged.snow_depth == 30.0u"cm"
+    @test merged.soil_temperature === nothing
+    @test merged.soil_moisture === nothing
 end
 
 @testset "_canonical_data" begin
@@ -47,7 +62,7 @@ end
     @test model.surface_albedo_source === nothing
     @test model.roughness_height_source === nothing
     @test model.lapse_rate_model isa EnvironmentalLapseRate
-    @test length(model.output_layers) == 8
+    @test length(model.output_layers) == 9
 end
 
 @testset "MicroMapProblem construction" begin

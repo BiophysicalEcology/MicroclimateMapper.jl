@@ -1,0 +1,240 @@
+# micro_points.jl
+#
+# Points-mode microclimate driver. `MicroPointsProblem` pairs a
+# `MicroMapModel` with an explicit list of (x, y) coordinates and a year
+# range; `init` computes the bounding extent from the points, loads weather
+# and DEM at their native resolutions (no resampling), computes terrain at
+# native DEM resolution, and per-point extracts every forcing into a 1-D
+# `Raster` whose only spatial dim is `Dim{:point}` backed by a
+# `MergedLookup` carrying the point coordinates.
+#
+# Points are taken as any `AbstractVector` of GeoInterface-conformant point
+# objects (e.g. `(lon, lat)` tuples, `Point((x, y))`, `(X=…, Y=…)`
+# NamedTuples). Coordinate access goes through `GeoInterface.x` / `.y`.
+
+const GI = GeoInterface
+
+# Degree buffer applied to the points' bounding box before passing it to
+# weather/landcover loaders. Has to be larger than the coarsest weather
+# source's native cell size so `crop(...; touches=true)` returns ≥1 cell
+# on Points-sampled grids. 2° accommodates NCEP's ~1.9° Gaussian spacing
+# with margin; finer sources just load a few extra cells (per-point Near
+# extraction picks the right one).
+const _POINTS_LOAD_BUFFER = 2.0
+
+"""
+    MicroPointsProblem(; model, points, years, init=nothing, data=(;))
+
+Concrete points-mode microclimate run: pairs a `MicroMapModel` with a list
+of GeoInterface-conformant points, a time range, initial conditions, and
+any per-run data overrides.
+
+- `model::MicroMapModel`
+- `points::AbstractVector` — any iterable of GeoInterface point-like objects
+  (e.g. `Vector{Tuple{Float64,Float64}}` of `(longitude, latitude)`).
+  The bounding extent is derived via `GeoInterface.extent(MultiPoint(points))`.
+- `years::AbstractRange`
+- `init`, `data` — same semantics as `MicroMapProblem`. Override Rasters
+  (`data.surface_albedo`, `data.roughness_height`, any canonical weather
+  variable) are per-point `Near`-extracted at `init` time rather than
+  resampled.
+
+The output `RasterStack` is shaped `(Dim{:point}, Ti, [depth | height])`
+where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
+callers can recover coordinates via `lookup`/`val` or by indexing with
+`X(At(x)), Y(At(y))` selectors.
+"""
+@kwdef struct MicroPointsProblem{M<:MicroMapModel,PT<:AbstractVector,Y,IT,D<:NamedTuple}
+    model::M
+    points::PT
+    years::Y
+    init::IT = nothing
+    data::D  = (;)
+end
+
+# ---------------------------------------------------------------------------
+# Points dim + per-point extractors
+# ---------------------------------------------------------------------------
+
+# Build the `Dim{:point}` lookup from the user's points. The `MergedLookup`
+# stores one `(x, y)` Float64 tuple per point so downstream selector
+# indexing (`X(At(x)), Y(At(y))`) can recover the original coordinate.
+function _make_points_dim(points)
+    coords = [(Float64(GI.x(p)), Float64(GI.y(p))) for p in points]
+    return Dim{:point}(MergedLookup(coords, (X(), Y())))
+end
+
+# Compute the loading extent from the points via GeoInterface — wrap as a
+# MultiPoint and ask GI for its extent (falls back to per-point extrema
+# when the wrapper has no stored extent).
+function _points_extent(points)
+    return GI.extent(GI.Wrappers.MultiPoint(collect(points)); fallback = true)
+end
+
+# Per-point extractor: returns a Raster whose only spatial dim is
+# `points_dim`. Three input forms:
+#   - scalar  → 1-D Fill-Raster (no time)
+#   - 2-D `(X, Y)` Raster → 1-D `(Dim{:point},)` Raster of per-point values
+#   - 3-D `(X, Y, Ti)` Raster → 2-D `(Dim{:point}, Ti)` Raster
+# Unit-tagged inputs flow through untouched — extraction is just indexing,
+# so the GDAL unit-stripping that grid-mode resampling needs is not required.
+
+_to_points(value, points_dim) =
+    Raster(Fill(value, length(points_dim)), (points_dim,))
+
+function _to_points(r::Raster, points_dim)
+    if hasdim(r, Ti)
+        return _to_points_with_time(r, points_dim)
+    else
+        return _to_points_constant(r, points_dim)
+    end
+end
+
+function _to_points_constant(r::Raster, points_dim)
+    coords = lookup(points_dim)
+    vals = [r[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+    return Raster(vals, (points_dim,))
+end
+
+function _to_points_with_time(r::Raster, points_dim)
+    coords = lookup(points_dim)
+    ti_dim = dims(r, Ti)
+    n_pt   = length(coords)
+    n_ti   = length(ti_dim)
+    T      = eltype(r)
+    out    = Matrix{T}(undef, n_pt, n_ti)
+    @inbounds for (i, (x, y)) in enumerate(coords)
+        for t in 1:n_ti
+            out[i, t] = r[X(Near(x)), Y(Near(y)), Ti(t)]
+        end
+    end
+    return Raster(out, (points_dim, ti_dim))
+end
+
+# Per-layer extract from a RasterStack (weather or terrain). Each layer
+# goes through `_to_points` so 2-D layers become 1-D and 3-D layers become
+# 2-D, all sharing the same `points_dim` spatial axis. `map(f, ::RasterStack)`
+# is pixel-wise, so we iterate layer names explicitly to keep this layer-wise.
+function _stack_to_points(stack::RasterStack, points_dim)
+    names = keys(stack)
+    extracted = map(n -> _to_points(getproperty(stack, n), points_dim), names)
+    return RasterStack(NamedTuple{names}(extracted))
+end
+
+# Resolve a surface property (albedo / roughness) into a 1-D points-mode
+# Raster. Same input forms as grid mode — the native-resolution result is
+# computed via `_resolve_surface_native` then `_to_points`-extracted.
+function _resolve_surface_points(data_override, source, landcover_source,
+                                 points_dim, area, default_fn)
+    native = data_override === nothing ?
+        _resolve_surface_native(source, landcover_source, area, default_fn) :
+        data_override
+    return _to_points(native, points_dim)
+end
+
+# Pre-extract every canonical-override raster at the point coordinates so
+# the per-pixel hot path is just `raster[Dim{:point}(p), Ti(k)]`.
+function _extract_canonical_overrides(canonical_data::NamedTuple, points_dim)
+    return map(canonical_data) do raster
+        _to_points(raster, points_dim)
+    end
+end
+
+# ---------------------------------------------------------------------------
+# CommonSolve.init
+# ---------------------------------------------------------------------------
+
+"""
+    CommonSolve.init(problem::MicroPointsProblem) -> MicroMapCache
+
+Compute the bounding extent of `problem.points`, load weather and DEM at
+native resolution, compute terrain at native DEM resolution, per-point
+extract every forcing into `Dim{:point}`-keyed Rasters, allocate the
+worker-cache pool, and prepare for `solve!`. No resampling is performed.
+"""
+function CommonSolve.init(problem::MicroPointsProblem)
+    (; model, points, years, data) = problem
+    (; dem_source, weather_source, landcover_source,
+       surface_albedo_source, roughness_height_source) = model
+
+    init_inputs = _resolve_init(problem.init, model.micro_model)
+    soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+
+    area       = _points_extent(points)
+    points_dim = _make_points_dim(points)
+
+    # Weather: load at native resolution over the points' bounding extent,
+    # buffered so the crop is non-empty even when (a) the points' bbox is
+    # degenerate (single point or co-located points) or (b) the weather
+    # source uses `Points`-sampling on a coarse grid where `touches=true`
+    # would otherwise return zero cells (e.g. NCEP ~2° Gaussian).
+    # DEM: `_load_dem` adds its own buffer (e.g. 0.3° for SRTM) so horizon
+    # ray sweeps have room. Terrain is computed at native DEM resolution
+    # (template = nothing) — slope / aspect / horizon vectors carry full
+    # relief; per-point Near extraction picks the value at each point.
+    weather_area = Extents.buffer(area,
+        (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+    weather_native = _resolve_weather(data, weather_source, weather_area, years)
+    dem_native     = _resolve_dem(data, dem_source, area)
+    terrain_native = compute_terrain_grids(dem_native;
+        template = nothing, n_horizon_angles = N_HORIZON_ANGLES)
+
+    weather = _stack_to_points(weather_native, points_dim)
+    terrain = _stack_to_points(terrain_native, points_dim)
+
+    albedo_data    = get(data, :surface_albedo,   nothing)
+    roughness_data = get(data, :roughness_height, nothing)
+    albedo_grid    = _resolve_surface_points(albedo_data, surface_albedo_source,
+        landcover_source, points_dim, area, default_landcover_albedo)
+    roughness_grid = _resolve_surface_points(roughness_data, roughness_height_source,
+        landcover_source, points_dim, area, default_landcover_roughness)
+
+    canonical_overrides = _extract_canonical_overrides(_canonical_data(data), points_dim)
+
+    cloud_constants = _build_cloud_constants()
+    build_inputs, cache_pool = _build_inputs_and_pool(;
+        model, weather_source, weather, terrain,
+        albedo_grid, roughness_grid, canonical_overrides,
+        init_inputs, soil_moisture_available, years, cloud_constants,
+    )
+
+    return MicroMapCache(
+        problem, weather, terrain, albedo_grid, roughness_grid,
+        canonical_overrides, cache_pool,
+        (; init_inputs, build_inputs),
+        cloud_constants,
+    )
+end
+
+"""
+    CommonSolve.solve(problem::MicroPointsProblem) -> RasterStack
+
+Shortcut for `solve!(init(problem))`.
+"""
+CommonSolve.solve(problem::MicroPointsProblem) = solve!(init(problem))
+
+# ---------------------------------------------------------------------------
+# Show methods
+# ---------------------------------------------------------------------------
+
+function Base.show(io::IO, ::MIME"text/plain", problem::MicroPointsProblem)
+    println(io, "MicroPointsProblem")
+    println(io, "  points: ", length(problem.points), " point(s)")
+    println(io, "  years:  ", problem.years)
+    println(io)
+    println(io, "forcings:")
+    _print_role_table(io, _role_statuses(problem))
+    _print_overrides(io, problem.data, "")
+    _print_problem_init(io, problem)
+end
+
+function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroPointsProblem})
+    problem = cache.problem
+    npts = length(problem.points)
+    println(io, "MicroMapCache  (", npts, " point", npts == 1 ? "" : "s", ")")
+    println(io, "  cache_pool:  ", cache.cache_pool.sz_max, " workers")
+    println(io)
+    println(io, "forcings:")
+    _print_role_table(io, _role_statuses(problem))
+    _print_overrides(io, problem.data, "")
+end

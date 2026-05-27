@@ -1,6 +1,6 @@
 using Test
-using BiophysicalGrids
-using BiophysicalGrids: _write_slice!
+using MicroclimateMapper
+using MicroclimateMapper: _write_slice!
 using Rasters
 using Rasters: X, Y, Ti, Dim
 

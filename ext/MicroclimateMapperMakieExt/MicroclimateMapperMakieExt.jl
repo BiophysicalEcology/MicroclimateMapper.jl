@@ -1,8 +1,8 @@
-module BiophysicalGridsMakieExt
+module MicroclimateMapperMakieExt
 
 using Makie
-using BiophysicalGrids
-using BiophysicalGrids: MicroMapCache
+using MicroclimateMapper
+using MicroclimateMapper: MicroMapCache
 using Rasters
 using Rasters: AbstractRaster, X, Y, Ti, hasdim, dims, rebuild
 using Unitful: Quantity, unit, ustrip
@@ -17,7 +17,7 @@ using Unitful: Quantity, unit, ustrip
 # slider events.
 #
 # Pass `layers` to restrict what's shown to a subset of the input layer
-# names (see `BiophysicalGrids.input_layer_names(cache)`). Extra keyword
+# names (see `MicroclimateMapper.input_layer_names(cache)`). Extra keyword
 # arguments are forwarded to `Rasters.rplot`.
 function Makie.plot(cache::MicroMapCache; layers = nothing, rplot_kw...)
     fig = Figure()
@@ -92,11 +92,11 @@ function _collect_input_layers(cache)
             end
         else
             seen = Set{Symbol}()
-            for var in BiophysicalGrids.weather_variables(source)
-                field = BiophysicalGrids.native_field(var)
+            for var in MicroclimateMapper.weather_variables(source)
+                field = MicroclimateMapper.native_field(var)
                 field in seen && continue
                 push!(seen, field)
-                canonical = BiophysicalGrids.canonical_name(var)
+                canonical = MicroclimateMapper.canonical_name(var)
                 push!(pairs, canonical => getproperty(weather, field))
             end
         end

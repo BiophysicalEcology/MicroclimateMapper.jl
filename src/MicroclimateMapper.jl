@@ -1,4 +1,4 @@
-module BiophysicalGrids
+module MicroclimateMapper
 
 using Dates
 using Statistics: mean
@@ -14,6 +14,7 @@ using FluidProperties
 using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation
 
 using GeoFormatTypes
+using GeoInterface
 using RasterDataSources
 using NCDatasets       # triggers Rasters NCDatasets extension for NetCDF support
 using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
@@ -24,6 +25,7 @@ using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup
 using Rasters.Lookups: Intervals, Center
+using Rasters.DimensionalData: Dim, MergedLookup, hasdim
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
 using Rasters.Extents: Extent
@@ -95,9 +97,10 @@ export
     example_soil_hydraulic_model,
     example_soil_properties_model,
     example_soil_profile,
-    # Grid microclimate
+    # Microclimate drivers
     MicroMapModel,
     MicroMapProblem,
+    MicroPointsProblem,
     MicroMapCache,
     solve,
     solve!,
@@ -118,6 +121,8 @@ include("climate/worldclim.jl")
 include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
+include("micro_common.jl")
 include("micro_map.jl")
+include("micro_points.jl")
 
 end

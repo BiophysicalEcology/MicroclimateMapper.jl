@@ -1,6 +1,6 @@
 using Test
-using BiophysicalGrids
-using BiophysicalGrids: compute_terrain_grids
+using MicroclimateMapper
+using MicroclimateMapper: compute_terrain_grids
 using Rasters, Rasters.Lookups
 using Rasters: X, Y
 using GeoFormatTypes

@@ -257,12 +257,17 @@ function _load_weather(source::Type{<:RasterDataSources.RasterDataSource},
     primary_stack = _load_layers(weather_loader(source), source,
                                  primary_layers(source), area, years)
     baseline = fallback_source(source)
-    if baseline === nothing
-        return RasterStack(primary_stack)
-    end
-    fb_stack = _load_layers(weather_loader(baseline), baseline,
-                            fallback_layers(source), area, years)
-    return RasterStack(merge(primary_stack, fb_stack))
+    stack = baseline === nothing ?
+        RasterStack(primary_stack) :
+        RasterStack(merge(primary_stack,
+            _load_layers(weather_loader(baseline), baseline,
+                         fallback_layers(source), area, years)))
+    # Source files declare a `missingval`, so loaded eltypes are
+    # `Union{Missing, T}`. The per-pixel reader does `value * unit`,
+    # which throws `convert(Missing, Quantity)` on any masked cell.
+    # `replace_missing(..., NaN)` strips the Missing union and lets
+    # NaN propagate visibly if any cell is genuinely masked.
+    return Rasters.replace_missing(stack, NaN)
 end
 
 # ---------------------------------------------------------------------------
@@ -748,21 +753,24 @@ end
     return nothing
 end
 
-# 2D override (constant in time): broadcast a scalar across the canonical
-# buffer.
-@inline function _copy_override!(target::AbstractVector,
-                                 raster::AbstractArray{<:Any, 2}, I)
-    value = raster[I...]
-    @inbounds for k in eachindex(target)
-        target[k] = value
-    end
-    return nothing
-end
-# 3D override: per-timestep slice.
-@inline function _copy_override!(target::AbstractVector,
-                                 raster::AbstractArray{<:Any, 3}, I)
-    @inbounds for k in eachindex(target)
-        target[k] = raster[I..., Ti(k)]
+# Override application — dispatch on Ti presence so both modes share one
+# code path:
+#   - constant-in-time override: spatial-only Raster, rank == length(I).
+#     Grid mode: 2-D (X, Y); points mode: 1-D (Dim{:point},).
+#   - time-varying override: trailing Ti dim, rank == length(I) + 1.
+#     Grid mode: 3-D (X, Y, Ti); points mode: 2-D (Dim{:point}, Ti).
+# `hasdim(raster, Ti)` is a compile-time check on the Raster's dim tuple,
+# so the branch folds away for any concrete Raster type.
+@inline function _copy_override!(target::AbstractVector, raster, I)
+    @inbounds if hasdim(raster, Ti)
+        for k in eachindex(target)
+            target[k] = raster[I..., Ti(k)]
+        end
+    else
+        value = raster[I...]
+        for k in eachindex(target)
+            target[k] = value
+        end
     end
     return nothing
 end
