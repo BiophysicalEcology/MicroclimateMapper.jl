@@ -1,6 +1,6 @@
-# micro_map.jl
+# micro_raster.jl
 #
-# Grid-mode microclimate driver. `MicroMapProblem` pairs a `MicroMapModel`
+# Grid-mode microclimate driver. `MicroRasterProblem` pairs a `MicroMapModel`
 # with a rectangular spatial extent, a year range, and an explicit
 # `template` grid (a Raster or an RDS source loaded over `area`); `init`
 # loads forcings at native resolution, resamples weather and DEM-derived
@@ -16,7 +16,7 @@
 #     run template at `init` time
 
 """
-    MicroMapProblem(; model, area, years, template, init=nothing, data=(;))
+    MicroRasterProblem(; model, area, years, template, init=nothing, data=(;))
 
 Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
 extent, time range, initial conditions, and any per-run data overrides.
@@ -39,7 +39,7 @@ extent, time range, initial conditions, and any per-run data overrides.
       `mean_temperature`, `cloud_cover`). Each as a `Raster` in canonical
       units; resampled to the run template automatically.
 """
-@kwdef struct MicroMapProblem{M<:MicroMapModel,A,Y,IT,D<:NamedTuple,T}
+@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,Y,IT,D<:NamedTuple,T}
     model::M
     area::A
     years::Y
@@ -82,7 +82,7 @@ function _resample_canonical_overrides(canonical_data::NamedTuple, template)
     end
 end
 
-# Resolve the user-supplied `MicroMapProblem.template` into a 2-D Raster.
+# Resolve the user-supplied `MicroRasterProblem.template` into a 2-D Raster.
 #   Raster              → use directly (slice off `Ti` if it carries one).
 #   Type{<:RDS source}  → load over `area` and use that as the template.
 _resolve_template(r::Raster, _area) = hasdim(r, Ti) ? view(r, Ti(1)) : r
@@ -169,13 +169,13 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    CommonSolve.init(problem::MicroMapProblem) -> MicroMapCache
+    CommonSolve.init(problem::MicroRasterProblem) -> MicroMapCache
 
 Load all per-run data (weather, DEM, landcover, surface properties, canonical
 overrides), pre-resolve every grid onto the run template, allocate the
 worker-cache pool, and prepare for `solve!`.
 """
-function CommonSolve.init(problem::MicroMapProblem)
+function CommonSolve.init(problem::MicroRasterProblem)
     (; model, area, years, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
@@ -229,18 +229,18 @@ function CommonSolve.init(problem::MicroMapProblem)
 end
 
 """
-    CommonSolve.solve(problem::MicroMapProblem) -> RasterStack
+    CommonSolve.solve(problem::MicroRasterProblem) -> RasterStack
 
 Shortcut for `solve!(init(problem))`.
 """
-CommonSolve.solve(problem::MicroMapProblem) = solve!(init(problem))
+CommonSolve.solve(problem::MicroRasterProblem) = solve!(init(problem))
 
 # ---------------------------------------------------------------------------
 # Show methods
 # ---------------------------------------------------------------------------
 
-function Base.show(io::IO, ::MIME"text/plain", problem::MicroMapProblem)
-    println(io, "MicroMapProblem")
+function Base.show(io::IO, ::MIME"text/plain", problem::MicroRasterProblem)
+    println(io, "MicroRasterProblem")
     println(io, "  area:     ", problem.area)
     println(io, "  years:    ", problem.years)
     println(io, "  template: ", _template_label(problem.template))
@@ -251,7 +251,7 @@ function Base.show(io::IO, ::MIME"text/plain", problem::MicroMapProblem)
     _print_problem_init(io, problem)
 end
 
-function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroMapProblem})
+function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroRasterProblem})
     problem = cache.problem
     nx, ny = size(cache.terrain.elevation)
     println(io, "MicroMapCache  (", nx, "×", ny, " grid, ", nx * ny, " pixels)")

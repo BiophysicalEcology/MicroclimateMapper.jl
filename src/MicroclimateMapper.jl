@@ -101,8 +101,8 @@ export
     example_soil_profile,
     # Microclimate drivers
     MicroMapModel,
-    MicroMapProblem,
-    MicroPointsProblem,
+    MicroRasterProblem,
+    MicroVectorProblem,
     MicroMapCache,
     solve,
     solve!,
@@ -128,7 +128,7 @@ include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
 include("micro_common.jl")
-include("micro_map.jl")
-include("micro_points.jl")
+include("micro_raster.jl")
+include("micro_vector.jl")
 
 end

@@ -1,6 +1,6 @@
-# micro_points.jl
+# micro_vector.jl
 #
-# Points-mode microclimate driver. `MicroPointsProblem` pairs a
+# Points-mode microclimate driver. `MicroVectorProblem` pairs a
 # `MicroMapModel` with an explicit list of (x, y) coordinates and a year
 # range; `init` computes the bounding extent from the points, loads weather
 # and DEM at their native resolutions (no resampling), computes terrain at
@@ -23,7 +23,7 @@ const GI = GeoInterface
 const _POINTS_LOAD_BUFFER = 2.0
 
 """
-    MicroPointsProblem(; model, points, years, init=nothing, data=(;))
+    MicroVectorProblem(; model, points, years, init=nothing, data=(;))
 
 Concrete points-mode microclimate run: pairs a `MicroMapModel` with a list
 of GeoInterface-conformant points, a time range, initial conditions, and
@@ -34,7 +34,7 @@ any per-run data overrides.
   (e.g. `Vector{Tuple{Float64,Float64}}` of `(longitude, latitude)`).
   The bounding extent is derived via `GeoInterface.extent(MultiPoint(points))`.
 - `years::AbstractRange`
-- `init`, `data` — same semantics as `MicroMapProblem`. Override Rasters
+- `init`, `data` — same semantics as `MicroRasterProblem`. Override Rasters
   (`data.surface_albedo`, `data.roughness_height`, any canonical weather
   variable) are per-point `Near`-extracted at `init` time rather than
   resampled.
@@ -44,7 +44,7 @@ where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
 callers can recover coordinates via `lookup`/`val` or by indexing with
 `X(At(x)), Y(At(y))` selectors.
 """
-@kwdef struct MicroPointsProblem{M<:MicroMapModel,PT<:AbstractVector,Y,IT,D<:NamedTuple}
+@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,Y,IT,D<:NamedTuple}
     model::M
     points::PT
     years::Y
@@ -145,14 +145,14 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    CommonSolve.init(problem::MicroPointsProblem) -> MicroMapCache
+    CommonSolve.init(problem::MicroVectorProblem) -> MicroMapCache
 
 Compute the bounding extent of `problem.points`, load weather and DEM at
 native resolution, compute terrain at native DEM resolution, per-point
 extract every forcing into `Dim{:point}`-keyed Rasters, allocate the
 worker-cache pool, and prepare for `solve!`. No resampling is performed.
 """
-function CommonSolve.init(problem::MicroPointsProblem)
+function CommonSolve.init(problem::MicroVectorProblem)
     (; model, points, years, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
@@ -207,18 +207,18 @@ function CommonSolve.init(problem::MicroPointsProblem)
 end
 
 """
-    CommonSolve.solve(problem::MicroPointsProblem) -> RasterStack
+    CommonSolve.solve(problem::MicroVectorProblem) -> RasterStack
 
 Shortcut for `solve!(init(problem))`.
 """
-CommonSolve.solve(problem::MicroPointsProblem) = solve!(init(problem))
+CommonSolve.solve(problem::MicroVectorProblem) = solve!(init(problem))
 
 # ---------------------------------------------------------------------------
 # Show methods
 # ---------------------------------------------------------------------------
 
-function Base.show(io::IO, ::MIME"text/plain", problem::MicroPointsProblem)
-    println(io, "MicroPointsProblem")
+function Base.show(io::IO, ::MIME"text/plain", problem::MicroVectorProblem)
+    println(io, "MicroVectorProblem")
     println(io, "  points: ", length(problem.points), " point(s)")
     println(io, "  years:  ", problem.years)
     println(io)
@@ -228,7 +228,7 @@ function Base.show(io::IO, ::MIME"text/plain", problem::MicroPointsProblem)
     _print_problem_init(io, problem)
 end
 
-function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroPointsProblem})
+function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroVectorProblem})
     problem = cache.problem
     npts = length(problem.points)
     println(io, "MicroMapCache  (", npts, " point", npts == 1 ? "" : "s", ")")

@@ -3,8 +3,8 @@
 # Shared types and scaffolding for the two declarative microclimate-simulation
 # entry points:
 #
-#   MicroMapProblem    (grid mode,   src/micro_map.jl)
-#   MicroPointsProblem (points mode, src/micro_points.jl)
+#   MicroRasterProblem (grid mode,   src/micro_raster.jl)
+#   MicroVectorProblem (points mode, src/micro_vector.jl)
 #
 # Both produce a `MicroMapCache` and run through the same `solve!` /
 # `_solve_proto_pixel!` / `_solve_remaining!` loop — the only difference is
@@ -63,8 +63,8 @@ const _DEFAULT_OUTPUT_LAYERS = (
                     lapse_rate_model=EnvironmentalLapseRate())
 
 Declarative description of a microclimate run. Constant across spatial
-extents and time ranges — pair with a `MicroMapProblem` (grid) or
-`MicroPointsProblem` (points) to actually run.
+extents and time ranges — pair with a `MicroRasterProblem` (grid) or
+`MicroVectorProblem` (points) to actually run.
 
 - `micro_model::MicroModel` — inner per-pixel physics model
 - `dem_source` — DEM data-source type (e.g. `SRTM`)
@@ -98,12 +98,12 @@ end
 # inner `MicroCache`s + scratch buffers. The output `RasterStack` is
 # allocated fresh on every `solve!` call — it does not live on the cache.
 #
-# Used by both `MicroMapProblem` and `MicroPointsProblem`: only the shape of
+# Used by both `MicroRasterProblem` and `MicroVectorProblem`: only the shape of
 # the spatial dim differs (`(X, Y)` vs `(Dim{:point},)`); every solve-time
 # code path indexes via `I::Tuple` of dim wrappers from `DimIndices`, so the
 # loop body is mode-agnostic.
 mutable struct MicroMapCache{P,W,T,A,R,CO,POOL,SC,CC}
-    problem::P                       # MicroMapProblem/MicroPointsProblem
+    problem::P                       # MicroRasterProblem/MicroVectorProblem
     weather::W                       # RasterStack
     terrain::T                       # RasterStack
     albedo_grid::A                   # Raster
