@@ -91,7 +91,7 @@ end
     @test dims(out.b) == (pdim,)
 end
 
-@testset "MicroPointsProblem construction" begin
+@testset "MicroVectorProblem construction" begin
     inner = example_microclimate_problem().model
     model = MicroMapModel(;
         micro_model    = inner,
@@ -100,14 +100,14 @@ end
     )
     years = 2000:2000
 
-    problem = MicroPointsProblem(; model, points = POINTS, years)
+    problem = MicroVectorProblem(; model, points = POINTS, years)
     @test problem.model === model
     @test problem.points === POINTS
     @test problem.years === years
     @test problem.init === nothing
     @test problem.data === (;)
 
-    problem2 = MicroPointsProblem(;
+    problem2 = MicroVectorProblem(;
         model, points = POINTS, years,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),

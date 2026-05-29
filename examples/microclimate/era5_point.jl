@@ -1,5 +1,5 @@
 # Example: microclimate simulation at a single point using ERA5 hourly
-# reanalysis data, driven via `MicroPointsProblem`.
+# reanalysis data, driven via `MicroVectorProblem`.
 #
 # The location (-89.46°, 43.14°) matches the NicheMapR validation dataset so
 # outputs can be compared against `micro_era5` output (see the commented
@@ -38,7 +38,7 @@ model = MicroMapModel(;
 # Rasters Zarr backend for the ARCO-ERA5 store. Once the JSON version
 # conflict between RasterDataSources/dev and ZarrDatasets is resolved this
 # can become a direct dependency.
-problem = MicroPointsProblem(; model, points = [point], years)
+problem = MicroVectorProblem(; model, points = [point], years)
 output  = solve(problem)
 
 @show size(output.soil_temperature)

@@ -65,7 +65,7 @@ end
     @test length(model.output_layers) == 9
 end
 
-@testset "MicroMapProblem construction" begin
+@testset "MicroRasterProblem construction" begin
     inner = example_microclimate_problem().model
     model = MicroMapModel(;
         micro_model    = inner,
@@ -75,7 +75,7 @@ end
     area  = Extent(X = (146.0, 146.1), Y = (-36.0, -35.9))
     years = 2000:2000
 
-    problem = MicroMapProblem(; model, area, years, template = SRTM)
+    problem = MicroRasterProblem(; model, area, years, template = SRTM)
     @test problem.model === model
     @test problem.area === area
     @test problem.years === years
@@ -84,7 +84,7 @@ end
     @test problem.data === (;)
 
     # Custom init + data overrides
-    problem2 = MicroMapProblem(;
+    problem2 = MicroRasterProblem(;
         model, area, years, template = SRTM,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
