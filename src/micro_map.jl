@@ -44,8 +44,8 @@ extent, time range, initial conditions, and any per-run data overrides.
     area::A
     years::Y
     template::T
-    init::IT    = nothing
-    data::D     = (;)
+    init::IT = nothing
+    data::D = (;)
 end
 
 # ---------------------------------------------------------------------------

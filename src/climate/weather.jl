@@ -118,6 +118,12 @@ The time step a source's `_load_weather` produces. Default
 @inline _days_of_year(::DailyResolution,   nyears) = repeat(1:365,             nyears)
 @inline _days_of_year(::HourlyResolution,  nyears) = repeat(1:365,             nyears)
 
+# Monthly forcing → independent representative days (Fortran "monthly mode");
+# daily/hourly forcing → continuous run with state carrying day-to-day.
+@inline _time_mode(::MonthlyResolution) = Microclimate.NonConsecutiveDayMode()
+@inline _time_mode(::DailyResolution)   = Microclimate.ConsecutiveDayMode()
+@inline _time_mode(::HourlyResolution)  = Microclimate.ConsecutiveDayMode()
+
 # ---------------------------------------------------------------------------
 # Loader traits
 # ---------------------------------------------------------------------------

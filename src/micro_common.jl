@@ -86,11 +86,11 @@ extents and time ranges — pair with a `MicroMapProblem` (grid) or
     micro_model::MM
     dem_source::DS
     weather_source::WS
-    landcover_source::LCS        = nothing
-    surface_albedo_source::SAS   = nothing
+    landcover_source::LCS = nothing
+    surface_albedo_source::SAS = nothing
     roughness_height_source::RHS = nothing
-    output_layers::OL            = _DEFAULT_OUTPUT_LAYERS
-    lapse_rate_model::LRT         = EnvironmentalLapseRate()
+    output_layers::OL = _DEFAULT_OUTPUT_LAYERS
+    lapse_rate_model::LRT = EnvironmentalLapseRate()
 end
 
 # Per-run workspace built by `init(problem)`. Holds the spatially-extracted
@@ -103,7 +103,7 @@ end
 # code path indexes via `I::Tuple` of dim wrappers from `DimIndices`, so the
 # loop body is mode-agnostic.
 mutable struct MicroMapCache{P,W,T,A,R,CO,POOL,SC,CC}
-    problem::P
+    problem::P                       # MicroMapProblem/MicroPointsProblem
     weather::W                       # RasterStack
     terrain::T                       # RasterStack
     albedo_grid::A                   # Raster
@@ -269,7 +269,10 @@ function _build_inputs_and_pool(;
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
-    ndays  = steps_per_year(temporal_resolution(weather_source)) * length(years)
+    resolution = temporal_resolution(weather_source)
+    ndays  = steps_per_year(resolution) * length(years)
+    days   = _days_of_year(resolution, length(years))
+    time_mode = _time_mode(resolution)
     nsteps = length(cloud_constants.hours) * ndays
     nmax   = cloud_constants.solar_model.wavelength_count
     allocate_scratch() = (;
@@ -318,7 +321,7 @@ function _build_inputs_and_pool(;
     npixels = length(terrain.elevation)
     first_I = first(DimIndices(terrain.elevation))
     build_cache() = let scratch = allocate_scratch()
-        (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I))),
+        (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
          scratch)
     end
 
@@ -355,7 +358,7 @@ function CommonSolve.solve!(cache::MicroMapCache)
     proto, first_I, first_result = _solve_proto_pixel!(cache)
     try
         layers = cache.problem.model.output_layers
-        output = _allocate_output(cache.problem.model.micro_model,
+        output = _allocate_output(cache.problem.model.micro_model, proto.micro.problem.days,
             cache.terrain, first_result, layers, first(cache.problem.years))
         _write_output!(output, first_result, layers, first_I)
         return _solve_remaining!(output, cache, proto)
@@ -426,9 +429,9 @@ end
 # Output stack allocation and per-pixel writes
 # ---------------------------------------------------------------------------
 
-function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple, year::Integer)
+function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple, year::Integer)
     spatial_dims = dims(terrain.elevation)
-    ti = Ti(_ti_datetime_axis(year, model.days, model.hours))
+    ti = Ti(_ti_datetime_axis(year, days, model.hours))
     extra = (
         soil    = (ti, Dim{:depth}(model.depths)),
         profile = (ti, Dim{:height}(model.heights)),
