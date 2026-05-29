@@ -1,9 +1,10 @@
 # micro_map.jl
 #
 # Grid-mode microclimate driver. `MicroMapProblem` pairs a `MicroMapModel`
-# with a rectangular spatial extent and a year range; `init` loads forcings
-# at native resolution, resamples DEM-derived terrain (slope, aspect,
-# horizon angles) onto the weather grid as the spatial template, and hands
+# with a rectangular spatial extent, a year range, and an explicit
+# `template` grid (a Raster or an RDS source loaded over `area`); `init`
+# loads forcings at native resolution, resamples weather and DEM-derived
+# terrain (slope, aspect, horizon angles) onto the template, and hands
 # off to the shared scaffolding in `micro_common.jl`.
 #
 # `data::NamedTuple` on the problem provides two layers of override:
@@ -15,7 +16,7 @@
 #     run template at `init` time
 
 """
-    MicroMapProblem(; model, area, years, init=nothing, data=(;))
+    MicroMapProblem(; model, area, years, template, init=nothing, data=(;))
 
 Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
 extent, time range, initial conditions, and any per-run data overrides.
@@ -23,6 +24,11 @@ extent, time range, initial conditions, and any per-run data overrides.
 - `model::MicroMapModel`
 - `area::Extents.Extent` — spatial extent (X = longitude, Y = latitude)
 - `years::AbstractRange`
+- `template` — spatial grid the run executes on. Required; no fallback.
+    * `Type{<:RasterDataSource}` (e.g. `SRTM`) — load that dataset over
+      `area` and use it as the grid; weather is resampled onto it.
+    * `Raster` — use the supplied raster's `X`/`Y` lookup as the grid;
+      weather is resampled onto it. Only `X`/`Y` dims are read.
 - `init` — initial conditions; default fills `soil_moisture` from
   `model.micro_model.depths` and lets `soil_temperature` fall back to the
   day-mean reference air temperature
@@ -33,12 +39,13 @@ extent, time range, initial conditions, and any per-run data overrides.
       `mean_temperature`, `cloud_cover`). Each as a `Raster` in canonical
       units; resampled to the run template automatically.
 """
-@kwdef struct MicroMapProblem{M<:MicroMapModel,A,Y,IT,D<:NamedTuple}
+@kwdef struct MicroMapProblem{M<:MicroMapModel,A,Y,IT,D<:NamedTuple,T}
     model::M
     area::A
     years::Y
-    init::IT = nothing
-    data::D  = (;)
+    template::T
+    init::IT    = nothing
+    data::D     = (;)
 end
 
 # ---------------------------------------------------------------------------
@@ -75,6 +82,88 @@ function _resample_canonical_overrides(canonical_data::NamedTuple, template)
     end
 end
 
+# Resolve the user-supplied `MicroMapProblem.template` into a 2-D Raster.
+#   Raster              → use directly (slice off `Ti` if it carries one).
+#   Type{<:RDS source}  → load over `area` and use that as the template.
+_resolve_template(r::Raster, _area) = hasdim(r, Ti) ? view(r, Ti(1)) : r
+# Only the X/Y dims are read downstream (via `Rasters.resample(; to=template)`
+# and `dims(template, (X, Y))`), so keep the raster lazy — never materialise.
+# Pass `extent` only if the source advertises it in `getraster_keywords`
+# (e.g. SRTM mosaics tile selection on it); otherwise load the whole
+# dataset lazily and let `crop` trim down to `area`.
+function _resolve_template(source::Type{<:RasterDataSources.RasterDataSource}, area::Extent)
+    kwargs = :extent in RasterDataSources.getraster_keywords(source) ?
+        (; extent = area, lazy = true) : (; lazy = true)
+    return crop(Raster(source; kwargs...); to = area, touches = true)
+end
+
+# One-line description of the template for `show`.
+_template_label(r::Raster) = "user Raster ($(size(r, X))×$(size(r, Y)))"
+_template_label(source::Type{<:RasterDataSources.RasterDataSource}) = string(source)
+
+# Degree buffer applied to the weather load area. Needs to be wide enough
+# that the cubic-spline resample kernel (4-cell footprint) has source
+# cells beyond the requested template extent.
+#
+# The default (0.5°) covers 1/24° (TerraClimate), 1/120° (CHELSA,
+# WorldClim), and 0.25° (ERA5) native grids. Coarser sources override
+# this — NCEP's T62 Gaussian grid is ~1.9°, so 4° gives the spline two
+# source cells beyond the template extent in every direction.
+weather_area_buffer(::Type{<:RasterDataSources.RasterDataSource}) = 0.5
+weather_area_buffer(::Type{<:NCEP}) = 4.0
+
+# Resample every layer of a 3-D `(X, Y, Ti)` weather stack onto a 2-D
+# `(X, Y)` template — used when the run grid is finer than the native
+# weather grid (e.g. SRTM-resolution template over TerraClimate weather).
+# `:cubicspline` interpolates continuously across native cell boundaries
+# so the upsampled weather varies smoothly with terrain rather than
+# stepping in blocks aligned to the coarse weather grid (GDAL's default
+# is nearest, which would produce visible block artifacts).
+function _resample_weather_to_template(weather::RasterStack, template_2d)
+    target_crs = crs(template_2d)
+    names = keys(weather)
+    resampled = map(names) do n
+        layer = _regularise_for_resample(getproperty(weather, n), target_crs)
+        Rasters.resample(layer; to = template_2d, method = :cubicspline)
+    end
+    return RasterStack(NamedTuple{names}(resampled))
+end
+
+# GDAL's resample backend needs a `Projected` lookup it can warp from, but
+# Gaussian-grid sources (NCEP) come in as `Mapped` with `Irregular` Y
+# bounds, which `convertlookup(::Projected, ::Mapped{Irregular})` can't
+# materialise. Locally — over the buffered template extent — Gaussian
+# spacing is uniform enough that rebuilding Y as a `Regular`-span
+# `Sampled` lookup at the mean step gives identical interpolation
+# results. We also rebuild X as plain `Sampled`+target CRS in the same
+# pass so neither axis goes through the `Mapped`→`Projected` reproject
+# path (which would otherwise require loading Proj).
+function _regularise_for_resample(layer::AbstractRaster, target_crs)
+    _is_irregular(lookup(layer, Y)) || return layer
+    new_x = _regular_sampled(lookup(layer, X))
+    new_y = _regular_sampled(lookup(layer, Y))
+    return setcrs(Rasters.set(layer, X => new_x, Y => new_y), target_crs)
+end
+
+@inline _is_irregular(lk) = span(lk) isa Irregular
+
+# Build a `Sampled{Regular}` lookup whose values land at the mean spacing
+# between the existing coordinates. Reversed inputs (descending Y) keep
+# their order. `Intervals(Center)` matches GDAL's cell-centre convention.
+function _regular_sampled(lk)
+    vals = collect(lk)
+    n = length(vals)
+    if n < 2
+        return Sampled(Float64.(vals); sampling = Intervals(Center()),
+            order = ForwardOrdered(), span = Regular(1.0))
+    end
+    step = (Float64(vals[end]) - Float64(vals[1])) / (n - 1)
+    rng  = range(Float64(vals[1]); step = step, length = n)
+    ord  = step < 0 ? ReverseOrdered() : ForwardOrdered()
+    return Sampled(rng; sampling = Intervals(Center()),
+        order = ord, span = Regular(step))
+end
+
 # ---------------------------------------------------------------------------
 # CommonSolve.init
 # ---------------------------------------------------------------------------
@@ -94,13 +183,23 @@ function CommonSolve.init(problem::MicroMapProblem)
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
 
-    # Use the weather source as the spatial template; terrain stays at the
-    # DEM's native resolution and is aggregated to the template inside
-    # `compute_terrain_grids` so slope / aspect / horizon angles reflect
-    # fine-scale relief rather than the smeared-out coarse-cell average.
-    weather    = _resolve_weather(data, weather_source, area, years)
-    dem_native = _resolve_dem(data, dem_source, area)
-    template_2d = view(first(values(weather)), Ti(1))
+    # Resolve the spatial template (Raster or RDS source loaded over
+    # `area`), then resample the native-resolution weather onto it so
+    # per-pixel `weather[I..., Ti(k)]` indexing matches the run grid.
+    # Terrain stays at the DEM's native resolution and is aggregated to
+    # the template inside `compute_terrain_grids`, so slope / aspect /
+    # horizon angles reflect fine-scale relief regardless of template.
+    # Weather is loaded over a buffered area so the cubic-spline kernel
+    # used by `_resample_weather_to_template` has source cells beyond
+    # the template edges; without the buffer the spline degenerates to
+    # nearest at the boundary.
+    buffer_deg = weather_area_buffer(weather_source)
+    weather_area = Extents.buffer(area,
+        (X = buffer_deg, Y = buffer_deg))
+    weather     = _resolve_weather(data, weather_source, weather_area, years)
+    dem_native  = _resolve_dem(data, dem_source, area)
+    template_2d = _resolve_template(problem.template, area)
+    weather     = _resample_weather_to_template(weather, template_2d)
     template    = first(values(weather))
     terrain     = compute_terrain_grids(dem_native;
         template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
@@ -142,8 +241,9 @@ CommonSolve.solve(problem::MicroMapProblem) = solve!(init(problem))
 
 function Base.show(io::IO, ::MIME"text/plain", problem::MicroMapProblem)
     println(io, "MicroMapProblem")
-    println(io, "  area:   ", problem.area)
-    println(io, "  years:  ", problem.years)
+    println(io, "  area:     ", problem.area)
+    println(io, "  years:    ", problem.years)
+    println(io, "  template: ", _template_label(problem.template))
     println(io)
     println(io, "forcings:")
     _print_role_table(io, _role_statuses(problem))

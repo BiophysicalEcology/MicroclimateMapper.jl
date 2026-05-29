@@ -75,16 +75,17 @@ end
     area  = Extent(X = (146.0, 146.1), Y = (-36.0, -35.9))
     years = 2000:2000
 
-    problem = MicroMapProblem(; model, area, years)
+    problem = MicroMapProblem(; model, area, years, template = SRTM)
     @test problem.model === model
     @test problem.area === area
     @test problem.years === years
+    @test problem.template === SRTM
     @test problem.init === nothing
     @test problem.data === (;)
 
     # Custom init + data overrides
     problem2 = MicroMapProblem(;
-        model, area, years,
+        model, area, years, template = SRTM,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
     )

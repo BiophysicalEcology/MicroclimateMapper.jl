@@ -23,8 +23,9 @@ using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 # checkout. Until that's resolved, users running ERA5 should add
 # `using ZarrDatasets` themselves in their script.
 using Rasters
-using Rasters: X, Y, Ti, Near, Between, lookup
-using Rasters.Lookups: Intervals, Center
+using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
+using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
+    ForwardOrdered, ReverseOrdered, span
 using Rasters.DimensionalData: Dim, MergedLookup, hasdim
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents

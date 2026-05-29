@@ -83,9 +83,17 @@ function _compute_horizon_native(elevation::Raster; directions::Int)
     canonical = _canonicalize(elevation)
     raw = Geomorphometry.horizon_angle(parent(canonical);
         directions, cellsize = Geomorphometry.cellsize(canonical))
-    # `raw` is (X, Y, direction). Build a Raster carrying the direction dim.
+    # Geomorphometry labels slot k as compass (k-1)*(360/n) on the image-matrix
+    # convention (row 1 = north, increasing row = south, col 1 = west). Our
+    # canonical layout is (X ascending, Y ascending), so row 1 = west and the
+    # "N" sweep walks west→east — every slot's physical direction sits 90° CCW
+    # of its label. Rotate the azimuth dim by +n/4 (shift indices by -n/4) so
+    # slot k once again points at compass (k-1)*(360/n) physically. Without
+    # this shift, mid-morning lookups for the "east" horizon return the
+    # northern horizon, producing perfect vertical stripes in direct radiation.
+    corrected = circshift(raw, (0, 0, -directions ÷ 4))
     az_dim = Dim{:azimuth}(1:directions)
-    return Raster(raw, (dims(canonical, X), dims(canonical, Y), az_dim);
+    return Raster(corrected, (dims(canonical, X), dims(canonical, Y), az_dim);
                   crs = crs(canonical))
 end
 
