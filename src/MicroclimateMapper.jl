@@ -43,62 +43,6 @@ export
     DryAdiabaticLapseRate,
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
-    # Lapse rate functions
-    lapse_rate,
-    lapse_adjust_temperature,
-    # Data source types (re-exported from RasterDataSources)
-    SRTM,
-    TerraClimate,
-    CHELSA,
-    WorldClim,
-    NCEP,
-    SurfaceGauss,
-    AWAP,
-    ERA5,
-    GRIDMET,
-    Climate,
-    Future,
-    CMIP5,
-    CMIP6,
-    RCP26, RCP45, RCP60, RCP85,
-    SSP126, SSP245, SSP370, SSP585,
-    EarthEnv,
-    LandCover,
-    MODIS,
-    MCD12Q1,
-    Historical,
-    Plus2C,
-    Plus4C,
-    # Weather data
-    # Land-cover
-    load_landcover,
-    landcover_weighted,
-    default_landcover_albedo,
-    default_landcover_roughness,
-    # Microclimate types (re-exported from Microclimate.jl)
-    Site,
-    MicroModel,
-    MicroInputs,
-    MicroProblem,
-    MicroConfig,
-    CampbelldeVriesSoilProperties,
-    CampbellSoilHydraulics,
-    DailyTimeseries,
-    MonthlyMinMaxEnvironment,
-    DailyMinMaxEnvironment,
-    HourlyTimeseries,
-    FixedSoilTemperatureIterations,
-    SoilTemperatureConvergenceTolerance,
-    NonConsecutiveDayMode,
-    ConsecutiveDayMode,
-    PrescribedSoilMoisture,
-    DynamicSoilMoisture,
-    NoSnow,
-    SnowModel,
-    # Microclimate helpers
-    example_soil_hydraulic_model,
-    example_soil_properties_model,
-    example_soil_profile,
     # Microclimate drivers
     MicroMapModel,
     MicroRasterProblem,
@@ -108,8 +52,8 @@ export
     solve!,
     init,
     reinit!,
-    # Atmosphere
-    get_aerosol_optical_depth
+    canonical_unit,
+    strip_to_canonical
 
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")

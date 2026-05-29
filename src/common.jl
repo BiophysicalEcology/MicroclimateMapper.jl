@@ -50,6 +50,38 @@ const _DEFAULT_OUTPUT_LAYERS = (
     LayerSpec(:snow_depth, :scalar),
 )
 
+"""
+    canonical_unit(name::Symbol)
+
+Canonical `Unitful` unit each default output layer is reported in for
+storage and downstream analysis. Used by `strip_to_canonical` when
+preparing a stack for unit-free I/O (e.g. NetCDF).
+"""
+canonical_unit(name::Symbol)              = canonical_unit(Val(name))
+canonical_unit(::Val{:soil_temperature})  = u"°C"
+canonical_unit(::Val{:air_temperature})   = u"°C"
+canonical_unit(::Val{:sky_temperature})   = u"°C"
+canonical_unit(::Val{:snow_depth})        = u"cm"
+canonical_unit(::Val{:wind_speed})        = u"m/s"
+canonical_unit(::Val{:surface_water})     = u"kg/m^2"
+canonical_unit(::Val{:global_radiation})  = u"W/m^2"
+canonical_unit(::Val{:soil_moisture})     = u"m^3/m^3"
+canonical_unit(::Val{:relative_humidity}) = u"percent"
+
+"""
+    strip_to_canonical(stack::RasterStack)
+
+Convert every layer of `stack` to its `canonical_unit` and strip the
+Unitful unit, returning a Float-valued `RasterStack` suitable for writing
+to a format that does not carry Unitful metadata (e.g. NetCDF).
+"""
+function strip_to_canonical(stack)
+    names = propertynames(stack)
+    return RasterStack(NamedTuple{names}(map(names) do n
+        ustrip.(canonical_unit(n), stack[n])
+    end))
+end
+
 # ---------------------------------------------------------------------------
 # Shared types
 # ---------------------------------------------------------------------------
@@ -454,9 +486,12 @@ end
 function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple, year::Integer, mask)
     spatial_dims = dims(terrain.elevation)
     ti = Ti(_ti_datetime_axis(year, days, model.hours))
+    # Dim lookups must be plain numbers, not Unitful — Unitful in dims
+    # breaks NetCDF I/O and surprises selectors. Strip both to metres so
+    # `depth` and `height` share a single linear axis.
     extra = (
-        soil = (ti, Dim{:depth}(model.depths)),
-        profile = (ti, Dim{:height}(model.heights)),
+        soil = (ti, Dim{:depth}(ustrip.(u"m", model.depths))),
+        profile = (ti, Dim{:height}(ustrip.(u"m", model.heights))),
         scalar = (ti,),
     )
     return RasterStack(NamedTuple(map(layers) do spec
