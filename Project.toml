@@ -34,6 +34,7 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 BiophysicalBehaviour = {rev = "main", url = "https://github.com/BiophysicalEcology/BiophysicalBehaviour.jl"}
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
 Microclimate = {path = "/home/raf/.julia/dev/Microclimate"}
+RasterDataSources = {path = "/home/raf/.julia/dev/RasterDataSources"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
 
 [extensions]

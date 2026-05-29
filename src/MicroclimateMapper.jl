@@ -26,7 +26,7 @@ using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
 using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
     ForwardOrdered, ReverseOrdered, span
-using Rasters.DimensionalData: Dim, MergedLookup, hasdim
+using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
 using Rasters.Extents: Extent
@@ -55,6 +55,7 @@ export
     SurfaceGauss,
     AWAP,
     ERA5,
+    GRIDMET,
     Climate,
     Future,
     CMIP5,
@@ -106,8 +107,11 @@ export
     solve,
     solve!,
     init,
-    reinit!
+    reinit!,
+    # Atmosphere
+    get_aerosol_optical_depth
 
+include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
 include("mesoclimate/lapse_rate.jl")
@@ -122,6 +126,7 @@ include("climate/worldclim.jl")
 include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
+include("climate/gridmet.jl")
 include("micro_common.jl")
 include("micro_map.jl")
 include("micro_points.jl")
