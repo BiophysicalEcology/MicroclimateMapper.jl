@@ -88,7 +88,7 @@ function landcover_weighted(stack::RasterStack{K}, weights::NamedTuple, _source)
     # Reorder/subset weights to match the stack's layer order so per-pixel
     # NamedTuples and weight NamedTuples align positionally.
     aligned_weights = NamedTuple{K}(weights)
-    fallback        = first(aligned_weights)
+    fallback = first(aligned_weights)
     return map(stack) do fractions
         total = sum(fractions)
         iszero(total) ? fallback : sum(map(*, fractions, aligned_weights)) / total
@@ -104,7 +104,7 @@ class. Pixels whose code isn't in the mapping get the first weight as a
 fallback.
 """
 function landcover_weighted(raster::Raster, weights::NamedTuple, source)
-    codes    = landcover_class_codes(source)
+    codes = landcover_class_codes(source)
     fallback = first(values(weights))
     # Code→weight as a flat array indexed by `code + 1` (codes can be 0).
     max_code = maximum(values(codes))
@@ -161,7 +161,7 @@ function _resolve_surface_property(
     source::Type{<:RasterDataSources.RasterDataSource},
     template, area, _,
 )
-    landcover       = load_landcover(source, area)
+    landcover = load_landcover(source, area)
     weighted_native = landcover_weighted(landcover, weights, source)
     return _resample_to_template(weighted_native, commondims(landcover, (X(), Y())), template)
 end
@@ -196,8 +196,8 @@ function load_surface_property end
     Rasters.resample(Raster(values, spatial_dims); to = template)
 @inline function _resample_to_template(values::AbstractArray{<:Quantity}, spatial_dims, template)
     value_unit = unit(eltype(values))
-    stripped   = ustrip.(value_unit, values)
-    resampled  = Rasters.resample(Raster(stripped, spatial_dims); to = template)
+    stripped = ustrip.(value_unit, values)
+    resampled = Rasters.resample(Raster(stripped, spatial_dims); to = template)
     return rebuild(resampled, parent(resampled) .* value_unit)
 end
 

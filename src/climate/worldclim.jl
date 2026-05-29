@@ -19,17 +19,17 @@ weather_loader(::Type{<:WorldClim{Climate}}) = MonthlyClimatology()
 
 function weather_variables(::Type{<:WorldClim{Climate}})
     (
-        WeatherVariable(:maximum_temperature,          :tmax, u"°C"),
-        WeatherVariable(:minimum_temperature,          :tmin, u"°C"),
-        WeatherVariable(:wind_speed,                   :wind, u"m/s"),
+        WeatherVariable(:maximum_temperature, :tmax, u"°C"),
+        WeatherVariable(:minimum_temperature, :tmin, u"°C"),
+        WeatherVariable(:wind_speed, :wind, u"m/s"),
         # WorldClim radiation is kJ/(m^2·day); Unitful converts to W/m^2 on
         # assignment to the canonical buffer (`Quantity{W/m^2}`).
         WeatherVariable(:downward_shortwave_radiation, :srad, u"kJ/m^2/d"),
         # `:prec` is mm depth; 1 mm of rainfall ≡ 1 kg/m^2.
-        WeatherVariable(:rainfall,                     :prec, u"kg/m^2"),
+        WeatherVariable(:rainfall, :prec, u"kg/m^2"),
         # `:vapr` is actual vapour pressure — feeds the VPD-from-actual
         # derivation that runs before RH.
-        WeatherVariable(:actual_vapour_pressure,       :vapr, u"kPa"),
+        WeatherVariable(:actual_vapour_pressure, :vapr, u"kPa"),
     )
 end
 
@@ -37,20 +37,20 @@ end
 # WorldClim{Future{Climate, ...}} — projected period climatology
 # ---------------------------------------------------------------------------
 
-weather_loader(::Type{<:WorldClim{<:Future{Climate}}})     = MultiBandFutureClimatology()
+weather_loader(::Type{<:WorldClim{<:Future{Climate}}}) = MultiBandFutureClimatology()
 
-primary_layers(::Type{<:WorldClim{<:Future{Climate}}})  = (:tmin, :tmax, :prec)
+primary_layers(::Type{<:WorldClim{<:Future{Climate}}}) = (:tmin, :tmax, :prec)
 fallback_layers(::Type{<:WorldClim{<:Future{Climate}}}) = (:wind, :srad, :vapr)
 fallback_source(::Type{<:WorldClim{<:Future{Climate}}}) = WorldClim{Climate}
 
 function weather_variables(::Type{<:WorldClim{<:Future{Climate}}})
     (
-        WeatherVariable(:maximum_temperature,          :tmax, u"°C"),
-        WeatherVariable(:minimum_temperature,          :tmin, u"°C"),
-        WeatherVariable(:rainfall,                     :prec, u"kg/m^2"),
+        WeatherVariable(:maximum_temperature, :tmax, u"°C"),
+        WeatherVariable(:minimum_temperature, :tmin, u"°C"),
+        WeatherVariable(:rainfall, :prec, u"kg/m^2"),
         # Fallback fields from the WorldClim{Climate} 1970-2000 baseline:
-        WeatherVariable(:wind_speed,                   :wind, u"m/s"),
+        WeatherVariable(:wind_speed, :wind, u"m/s"),
         WeatherVariable(:downward_shortwave_radiation, :srad, u"kJ/m^2/d"),
-        WeatherVariable(:actual_vapour_pressure,       :vapr, u"kPa"),
+        WeatherVariable(:actual_vapour_pressure, :vapr, u"kPa"),
     )
 end

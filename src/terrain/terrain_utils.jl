@@ -43,20 +43,20 @@ function compute_terrain_grids(dem::Raster;
                                    Y => Intervals(Center()))
     cellsize_native = Geomorphometry.cellsize(canonical_native)
 
-    slope_native  = Geomorphometry.slope( canonical_native; method = Horn(), cellsize = cellsize_native)
+    slope_native = Geomorphometry.slope( canonical_native; method = Horn(), cellsize = cellsize_native)
     aspect_native = Geomorphometry.aspect(canonical_native; method = Horn(), cellsize = cellsize_native)
     horizon_native_stack = _compute_horizon_native(canonical_native; directions = n_horizon_angles)
 
     target = template === nothing ? canonical_native : template
 
     elevation = Rasters.resample(canonical_native; to = target, method = :average) .* u"m"
-    slope     = Rasters.resample(slope_native;     to = target, method = :average) .* u"°"
-    aspect    = _circular_mean_aspect(aspect_native, target)                       .* u"°"
-    horizon   = _resample_horizon(horizon_native_stack, target, n_horizon_angles)
+    slope = Rasters.resample(slope_native; to = target, method = :average) .* u"°"
+    aspect = _circular_mean_aspect(aspect_native, target)                       .* u"°"
+    horizon = _resample_horizon(horizon_native_stack, target, n_horizon_angles)
 
     longitude = first.(DimPoints(elevation)) .* u"°"
-    latitude  = last.(DimPoints(elevation))  .* u"°"
-    pressure  = atmospheric_pressure.(elevation)
+    latitude = last.(DimPoints(elevation))  .* u"°"
+    pressure = atmospheric_pressure.(elevation)
 
     return RasterStack((;
         elevation, slope, aspect, latitude, longitude,

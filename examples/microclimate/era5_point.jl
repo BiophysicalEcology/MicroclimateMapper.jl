@@ -26,9 +26,9 @@ years = 2000:2000
 inner = example_microclimate_problem().model
 
 model = MicroMapModel(;
-    micro_model     = inner,
-    dem_source      = SRTM,
-    weather_source  = ERA5,
+    micro_model = inner,
+    dem_source = SRTM,
+    weather_source = ERA5,
 )
 
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ model = MicroMapModel(;
 # conflict between RasterDataSources/dev and ZarrDatasets is resolved this
 # can become a direct dependency.
 problem = MicroVectorProblem(; model, points = [point], years)
-output  = solve(problem)
+output = solve(problem)
 
 @show size(output.soil_temperature)
 @show output.soil_temperature[1, 1, :]   # first point, first hour, all depths
@@ -62,7 +62,7 @@ aod = get_aerosol_optical_depth(point, 0.01, 6)
 #
 # let
 #     data_dir = joinpath(@__DIR__, "..", "..", "test", "data", "micro_era5")
-#     soil   = CSV.read(joinpath(data_dir, "soil_era5.csv"),   DataFrame)
+#     soil = CSV.read(joinpath(data_dir, "soil_era5.csv"), DataFrame)
 #     metout = CSV.read(joinpath(data_dir, "metout_era5.csv"), DataFrame)
 #
 #     n = nrow(soil)
@@ -70,12 +70,12 @@ aod = get_aerosol_optical_depth(point, 0.01, 6)
 #
 #     # ---- NicheMapR reference vectors ----------------------------------------
 #     soiltemps_nmr = Matrix(soil[:, ["D0cm","D2.5cm","D5cm","D10cm","D15cm","D20cm","D30cm","D50cm","D100cm","D200cm"]])
-#     ta1cm_nmr  = (metout.TALOC .+ 273.15) .* 1u"K"
-#     ta2m_nmr   = (metout.TAREF .+ 273.15) .* 1u"K"
+#     ta1cm_nmr = (metout.TALOC .+ 273.15) .* 1u"K"
+#     ta2m_nmr = (metout.TAREF .+ 273.15) .* 1u"K"
 #
 #     # ---- Julia output (first point) -----------------------------------------
 #     soil_T = view(output.soil_temperature, 1, :, :)   # (Ti, depth)
-#     air_T  = view(output.air_temperature,  1, :, :)   # (Ti, height)
+#     air_T = view(output.air_temperature, 1, :, :)   # (Ti, height)
 #     depths_labels = ["$(round(ustrip(u"cm", d); digits=1)) cm"
 #                      for d in [0, 2.5, 5, 10, 15, 20, 30, 50, 100, 200]u"cm"]
 #

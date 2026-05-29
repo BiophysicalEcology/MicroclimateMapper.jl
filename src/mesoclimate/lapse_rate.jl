@@ -45,10 +45,10 @@ end
 
 Return the lapse rate constant for the given lapse rate type.
 """
-lapse_rate(::EnvironmentalLapseRate)      = 0.0065u"K/m"
-lapse_rate(::DryAdiabaticLapseRate)       = 0.0098u"K/m"
+lapse_rate(::EnvironmentalLapseRate) = 0.0065u"K/m"
+lapse_rate(::DryAdiabaticLapseRate) = 0.0098u"K/m"
 lapse_rate(::SaturatedAdiabaticLapseRate) = 0.006u"K/m"
-lapse_rate(lr::CustomLapseRate)           = lr.rate
+lapse_rate(lr::CustomLapseRate) = lr.rate
 
 """
     lapse_adjust_temperature(lr::LapseRate, T, Δz)

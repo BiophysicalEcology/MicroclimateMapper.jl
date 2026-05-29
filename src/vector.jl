@@ -49,7 +49,7 @@ callers can recover coordinates via `lookup`/`val` or by indexing with
     points::PT
     years::Y
     init::IT = nothing
-    data::D  = (;)
+    data::D = (;)
 end
 
 # ---------------------------------------------------------------------------
@@ -99,10 +99,10 @@ end
 function _to_points_with_time(r::Raster, points_dim)
     coords = lookup(points_dim)
     ti_dim = dims(r, Ti)
-    n_pt   = length(coords)
-    n_ti   = length(ti_dim)
-    T      = eltype(r)
-    out    = Matrix{T}(undef, n_pt, n_ti)
+    n_pt = length(coords)
+    n_ti = length(ti_dim)
+    T = eltype(r)
+    out = Matrix{T}(undef, n_pt, n_ti)
     @inbounds for (i, (x, y)) in enumerate(coords)
         for t in 1:n_ti
             out[i, t] = r[X(Near(x)), Y(Near(y)), Ti(t)]
@@ -160,7 +160,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
 
-    area       = _points_extent(points)
+    area = _points_extent(points)
     points_dim = _make_points_dim(points)
 
     # Weather: load at native resolution over the points' bounding extent,
@@ -175,16 +175,16 @@ function CommonSolve.init(problem::MicroVectorProblem)
     weather_area = Extents.buffer(area,
         (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
     weather_native = _resolve_weather(data, weather_source, weather_area, years)
-    dem_native     = _resolve_dem(data, dem_source, area)
+    dem_native = _resolve_dem(data, dem_source, area)
     terrain_native = compute_terrain_grids(dem_native;
         template = nothing, n_horizon_angles = N_HORIZON_ANGLES)
 
     weather = _stack_to_points(weather_native, points_dim)
     terrain = _stack_to_points(terrain_native, points_dim)
 
-    albedo_data    = get(data, :surface_albedo,   nothing)
+    albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
-    albedo_grid    = _resolve_surface_points(albedo_data, surface_albedo_source,
+    albedo_grid = _resolve_surface_points(albedo_data, surface_albedo_source,
         landcover_source, points_dim, area, default_landcover_albedo)
     roughness_grid = _resolve_surface_points(roughness_data, roughness_height_source,
         landcover_source, points_dim, area, default_landcover_roughness)
@@ -200,7 +200,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
-        canonical_overrides, cache_pool,
+        canonical_overrides, nothing, cache_pool,
         (; init_inputs, build_inputs),
         cloud_constants,
     )
@@ -223,7 +223,7 @@ function Base.show(io::IO, ::MIME"text/plain", problem::MicroVectorProblem)
     println(io, "  years:  ", problem.years)
     println(io)
     println(io, "forcings:")
-    _print_role_table(io, _role_statuses(problem))
+    _print_forcing_table(io, _forcing_origins(problem))
     _print_overrides(io, problem.data, "")
     _print_problem_init(io, problem)
 end
@@ -235,6 +235,6 @@ function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroVecto
     println(io, "  cache_pool:  ", cache.cache_pool.sz_max, " workers")
     println(io)
     println(io, "forcings:")
-    _print_role_table(io, _role_statuses(problem))
+    _print_forcing_table(io, _forcing_origins(problem))
     _print_overrides(io, problem.data, "")
 end

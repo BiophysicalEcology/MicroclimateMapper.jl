@@ -108,21 +108,21 @@ The time step a source's `_load_weather` produces. Default
 @inline temporal_resolution(::Type) = MonthlyResolution()
 
 @inline steps_per_year(::MonthlyResolution) = 12
-@inline steps_per_year(::DailyResolution)   = 365
-@inline steps_per_year(::HourlyResolution)  = 8760
+@inline steps_per_year(::DailyResolution) = 365
+@inline steps_per_year(::HourlyResolution) = 8760
 
 @inline _minmax_env_type(::MonthlyResolution) = MonthlyMinMaxEnvironment
-@inline _minmax_env_type(::DailyResolution)   = DailyMinMaxEnvironment
+@inline _minmax_env_type(::DailyResolution) = DailyMinMaxEnvironment
 
 @inline _days_of_year(::MonthlyResolution, nyears) = repeat(Microclimate.DEFAULT_DAYS, nyears)
-@inline _days_of_year(::DailyResolution,   nyears) = repeat(1:365,             nyears)
-@inline _days_of_year(::HourlyResolution,  nyears) = repeat(1:365,             nyears)
+@inline _days_of_year(::DailyResolution, nyears) = repeat(1:365, nyears)
+@inline _days_of_year(::HourlyResolution, nyears) = repeat(1:365, nyears)
 
 # Monthly forcing → independent representative days (Fortran "monthly mode");
 # daily/hourly forcing → continuous run with state carrying day-to-day.
 @inline _time_mode(::MonthlyResolution) = Microclimate.NonConsecutiveDayMode()
-@inline _time_mode(::DailyResolution)   = Microclimate.ConsecutiveDayMode()
-@inline _time_mode(::HourlyResolution)  = Microclimate.ConsecutiveDayMode()
+@inline _time_mode(::DailyResolution) = Microclimate.ConsecutiveDayMode()
+@inline _time_mode(::HourlyResolution) = Microclimate.ConsecutiveDayMode()
 
 # ---------------------------------------------------------------------------
 # Loader traits
@@ -303,7 +303,7 @@ function _load_layers(::MonthlyClimatology, source, fields::Tuple, area::Extent,
 end
 
 function _load_layers(::FutureMonthlyClimatology, source, fields::Tuple, area::Extent, years)
-    nyears      = length(years)
+    nyears = length(years)
     future_date = Date(first(years))
     layers = map(fields) do name
         _build_monthly_climatology(area, nyears) do month
@@ -315,7 +315,7 @@ end
 
 function _load_layers(::MultiBandFutureClimatology, source, fields::Tuple,
                       area::Extent, years)
-    nyears      = length(years)
+    nyears = length(years)
     future_date = Date(first(years))
     layers = map(fields) do name
         path = getraster(source, name; date = future_date)
@@ -335,16 +335,16 @@ end
 
 function _load_layers(::DailyFiles, source, fields::Tuple, area::Extent, years)
     extras = _extra_getraster_kwargs(source)
-    dates  = _daily_date_sequence(years)
+    dates = _daily_date_sequence(years)
     nsteps = length(dates)
     layers = map(fields) do name
         per_day = map(dates) do d
             path = getraster(source, name; date = d, extras...)
             read(crop(Raster(path; lazy = true); to = area, touches = true))
         end
-        first_day    = first(per_day)
+        first_day = first(per_day)
         spatial_dims = dims(first_day)
-        stacked      = cat(map(parent, per_day)...; dims = 3)
+        stacked = cat(map(parent, per_day)...; dims = 3)
         Raster(stacked, (spatial_dims..., Ti(1:nsteps)); crs = crs(first_day))
     end
     return NamedTuple{fields}(layers)
@@ -366,9 +366,9 @@ end
 function _load_layers(::HourlyZarrStore, source, fields::Tuple, area::Extent, years)
     # `getraster(source)` returns a `CachedCloudSource(url, cache_path)`.
     cloud_source = getraster(source)
-    full_stack   = RasterStack(cloud_source.url; source = Rasters.Zarrsource(), lazy = true)
-    time_start   = DateTime(first(years), 1, 1, 0)
-    time_end     = DateTime(last(years), 12, 31, 23)
+    full_stack = RasterStack(cloud_source.url; source = Rasters.Zarrsource(), lazy = true)
+    time_start = DateTime(first(years), 1, 1, 0)
+    time_end = DateTime(last(years), 12, 31, 23)
     # `view(... X(lo..hi), Y(lo..hi), Ti(t1..t2))` selects by dim name —
     # storage order in the Zarr store (typically `(time, lat, lon)`) is
     # irrelevant since downstream access uses `[I..., Ti(k)]` dim wrappers.
@@ -393,9 +393,9 @@ function _build_monthly_climatology(path_for, area::Extent, nyears::Int)
         read(crop(Raster(path; lazy = true); to = area, touches = true))
     end
     first_monthly = first(monthly)
-    spatial_dims  = dims(first_monthly)
-    climatology   = cat(map(parent, monthly)...; dims = 3)
-    tiled         = nyears == 1 ? climatology :
+    spatial_dims = dims(first_monthly)
+    climatology = cat(map(parent, monthly)...; dims = 3)
+    tiled = nyears == 1 ? climatology :
                                   repeat(climatology; outer = (1, 1, nyears))
     return Raster(tiled, (spatial_dims..., Ti(1:(12 * nyears))); crs = crs(first_monthly))
 end
@@ -437,20 +437,20 @@ function derive! end
 # nothing downstream reads. We rely on the unused-output property rather
 # than runtime input-availability checks.
 const _DEFAULT_DERIVATIONS = (
-    Val(:reference_temperature_max),  # ← lapse(maximum_temperature)
-    Val(:reference_temperature_min),  # ← lapse(minimum_temperature)
-    Val(:mean_temperature),           # ← (ref_max + ref_min) / 2
-    Val(:wind_speed),                 # ← √(u_wind² + v_wind²)   — NCEP
-    Val(:actual_vapour_pressure),     # ← q·p / (0.622 + 0.378·q) — NCEP
-    Val(:vapour_pressure_deficit),    # ← e_s(mean_T) - actual_VP  — WorldClim, NCEP
-    Val(:reference_humidity_max),     # ← from VPD + ref_temp_min
-    Val(:reference_humidity_min),     # ← from VPD + ref_temp_max
-    Val(:reference_wind_max),         # ← wind_speed × shear_factor
-    Val(:reference_wind_min),         # ← ref_wind_max × 0.1
-    Val(:cloud_cover),                # ← from downward_shortwave_radiation
-    Val(:cloud_min),                  # ← cloud_cover × 0.5 clamp
-    Val(:cloud_max),                  # ← cloud_cover × 2.0 clamp
-    Val(:deep_soil_temperature),      # ← annual-mean of mean_temperature
+    Val(:reference_temperature_max), # ← lapse(maximum_temperature)
+    Val(:reference_temperature_min), # ← lapse(minimum_temperature)
+    Val(:mean_temperature), # ← (ref_max + ref_min) / 2
+    Val(:wind_speed), # ← √(u_wind² + v_wind²)   — NCEP
+    Val(:actual_vapour_pressure), # ← q·p / (0.622 + 0.378·q) — NCEP
+    Val(:vapour_pressure_deficit), # ← e_s(mean_T) - actual_VP  — WorldClim, NCEP
+    Val(:reference_humidity_max), # ← from VPD + ref_temp_min
+    Val(:reference_humidity_min), # ← from VPD + ref_temp_max
+    Val(:reference_wind_max), # ← wind_speed × shear_factor
+    Val(:reference_wind_min), # ← ref_wind_max × 0.1
+    Val(:cloud_cover), # ← from downward_shortwave_radiation
+    Val(:cloud_min), # ← cloud_cover × 0.5 clamp
+    Val(:cloud_max), # ← cloud_cover × 2.0 clamp
+    Val(:deep_soil_temperature), # ← annual-mean of mean_temperature
 )
 
 # Hourly-mode chain — for sources like ERA5 that provide hourly values
@@ -458,11 +458,11 @@ const _DEFAULT_DERIVATIONS = (
 # *are* the env_hourly arrays. Just convert components into the shapes
 # the solver wants and aggregate to env_daily.
 const _DERIVATIONS_HOURLY = (
-    Val(:wind_speed),                            # u/v → reference_wind_speed
-    Val(:actual_vapour_pressure_from_dewpoint),  # T_dew → actual_VP
-    Val(:reference_humidity),                    # actual_VP + T → RH
-    Val(:rainfall_daily_from_hourly),            # hourly rainfall → daily total
-    Val(:deep_soil_temperature_from_hourly),     # annual mean of hourly T
+    Val(:wind_speed), # u/v → reference_wind_speed
+    Val(:actual_vapour_pressure_from_dewpoint), # T_dew → actual_VP
+    Val(:reference_humidity), # actual_VP + T → RH
+    Val(:rainfall_daily_from_hourly), # hourly rainfall → daily total
+    Val(:deep_soil_temperature_from_hourly), # annual mean of hourly T
 )
 
 """
@@ -498,66 +498,66 @@ end
 
 function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyResolution},
                                    source, nyears::Int)
-    nsteps       = nyears * steps_per_year(resolution)
+    nsteps = nyears * steps_per_year(resolution)
     days_of_year = _days_of_year(resolution, nyears)
     zeros_float(n) = zeros(Float64, n)
 
     # Canonical buffers — each carries the unit appropriate for its quantity.
     # Some arrays are also held inside the env structs below; writes via the
     # canonical name show up in the struct (same array).
-    maximum_temperature          = zeros(typeof(0.0u"K"),      nsteps)
-    minimum_temperature          = zeros(typeof(0.0u"K"),      nsteps)
-    mean_temperature             = zeros(typeof(0.0u"K"),      nsteps)
-    reference_temperature_min    = zeros(typeof(0.0u"K"),      nsteps)
-    reference_temperature_max    = zeros(typeof(0.0u"K"),      nsteps)
-    wind_speed                   = zeros(typeof(0.0u"m/s"),    nsteps)
-    u_wind                       = zeros(typeof(0.0u"m/s"),    nsteps)
-    v_wind                       = zeros(typeof(0.0u"m/s"),    nsteps)
-    reference_wind_min           = zeros(typeof(0.0u"m/s"),    nsteps)
-    reference_wind_max           = zeros(typeof(0.0u"m/s"),    nsteps)
-    vapour_pressure_deficit      = zeros(typeof(0.0u"kPa"),    nsteps)
-    actual_vapour_pressure       = zeros(typeof(0.0u"kPa"),    nsteps)
-    specific_humidity            = zeros_float(nsteps)
-    surface_pressure             = zeros(typeof(0.0u"Pa"),     nsteps)
-    reference_humidity_min       = zeros_float(nsteps)
-    reference_humidity_max       = zeros_float(nsteps)
-    downward_shortwave_radiation = zeros(typeof(0.0u"W/m^2"),  nsteps)
-    cloud_cover                  = zeros_float(nsteps)
-    cloud_min                    = zeros_float(nsteps)
-    cloud_max                    = zeros_float(nsteps)
-    rainfall                     = zeros(typeof(0.0u"kg/m^2"), nsteps)
-    deep_soil_temperature        = zeros(typeof(0.0u"K"),      nsteps)
-    soil_moisture                = zeros_float(nsteps)
+    maximum_temperature = zeros(typeof(0.0u"K"), nsteps)
+    minimum_temperature = zeros(typeof(0.0u"K"), nsteps)
+    mean_temperature = zeros(typeof(0.0u"K"), nsteps)
+    reference_temperature_min = zeros(typeof(0.0u"K"), nsteps)
+    reference_temperature_max = zeros(typeof(0.0u"K"), nsteps)
+    wind_speed = zeros(typeof(0.0u"m/s"), nsteps)
+    u_wind = zeros(typeof(0.0u"m/s"), nsteps)
+    v_wind = zeros(typeof(0.0u"m/s"), nsteps)
+    reference_wind_min = zeros(typeof(0.0u"m/s"), nsteps)
+    reference_wind_max = zeros(typeof(0.0u"m/s"), nsteps)
+    vapour_pressure_deficit = zeros(typeof(0.0u"kPa"), nsteps)
+    actual_vapour_pressure = zeros(typeof(0.0u"kPa"), nsteps)
+    specific_humidity = zeros_float(nsteps)
+    surface_pressure = zeros(typeof(0.0u"Pa"), nsteps)
+    reference_humidity_min = zeros_float(nsteps)
+    reference_humidity_max = zeros_float(nsteps)
+    downward_shortwave_radiation = zeros(typeof(0.0u"W/m^2"), nsteps)
+    cloud_cover = zeros_float(nsteps)
+    cloud_min = zeros_float(nsteps)
+    cloud_max = zeros_float(nsteps)
+    rainfall = zeros(typeof(0.0u"kg/m^2"), nsteps)
+    deep_soil_temperature = zeros(typeof(0.0u"K"), nsteps)
+    soil_moisture = zeros_float(nsteps)
 
     # `_minmax_env_type(resolution)` returns the type constructor — same
     # field set for Monthly and Daily, so the kwargs are identical.
     environment_minmax = _minmax_env_type(resolution)(;
         reference_temperature_min, reference_temperature_max,
-        reference_wind_min,        reference_wind_max,
-        reference_humidity_min,    reference_humidity_max,
-        cloud_min,                 cloud_max,
+        reference_wind_min, reference_wind_max,
+        reference_humidity_min, reference_humidity_max,
+        cloud_min, cloud_max,
         minima_times = (temp = 0, wind = 0, humidity = 1, cloud = 1),
         maxima_times = (temp = 1, wind = 1, humidity = 0, cloud = 0),
     )
     # DailyTimeseries is the "per-step" struct regardless of resolution —
     # one entry per main timestep (month for monthly, day for daily).
     environment_daily = DailyTimeseries(;
-        shade                 = zeros_float(nsteps),
-        soil_wetness          = zeros_float(nsteps),
-        surface_emissivity    = fill(0.95, nsteps),
-        cloud_emissivity      = fill(0.95, nsteps),
+        shade = zeros_float(nsteps),
+        soil_wetness = zeros_float(nsteps),
+        surface_emissivity = fill(0.95, nsteps),
+        cloud_emissivity = fill(0.95, nsteps),
         rainfall, deep_soil_temperature,
-        leaf_area_index       = fill(0.1, nsteps),
+        leaf_area_index = fill(0.1, nsteps),
     )
     # Pressure is constant per pixel — a `Fill` is rebuilt and swapped in
     # via `setproperties` each call, so this initial value is just a stub.
     # HourlyTimeseries is always 24× the main step count.
     environment_hourly = HourlyTimeseries(;
-        pressure              = Fill(atmospheric_pressure(0.0u"m"), nsteps * 24),
-        reference_temperature = nothing, reference_humidity   = nothing,
-        reference_wind_speed  = nothing, global_radiation     = nothing,
-        longwave_radiation    = nothing, cloud_cover          = nothing,
-        rainfall              = nothing, zenith_angle         = nothing,
+        pressure = Fill(atmospheric_pressure(0.0u"m"), nsteps * 24),
+        reference_temperature = nothing, reference_humidity = nothing,
+        reference_wind_speed = nothing, global_radiation = nothing,
+        longwave_radiation = nothing, cloud_cover = nothing,
+        rainfall = nothing, zenith_angle = nothing,
     )
 
     return (;
@@ -579,40 +579,40 @@ end
 # and are filled by aggregating the hourly canonical buffers.
 function _allocate_weather_buffers(::HourlyResolution, source, nyears::Int)
     nhours = nyears * 8760  # 24 × 365 (Feb 29 dropped)
-    ndays  = nyears * 365
+    ndays = nyears * 365
     zeros_float(n) = zeros(Float64, n)
 
     # Hourly canonical buffers — shared with `environment_hourly`.
-    reference_temperature  = zeros(typeof(0.0u"K"),      nhours)
-    reference_humidity     = zeros_float(nhours)
-    wind_speed             = zeros(typeof(0.0u"m/s"),    nhours)
-    pressure               = zeros(typeof(0.0u"Pa"),     nhours)
-    cloud_cover            = zeros_float(nhours)
-    global_radiation       = zeros(typeof(0.0u"W/m^2"),  nhours)
-    longwave_radiation     = zeros(typeof(0.0u"W/m^2"),  nhours)
-    rainfall               = zeros(typeof(0.0u"kg/m^2"), nhours)
-    zenith_angle           = zeros(typeof(0.0u"°"),      nhours)
+    reference_temperature = zeros(typeof(0.0u"K"), nhours)
+    reference_humidity = zeros_float(nhours)
+    wind_speed = zeros(typeof(0.0u"m/s"), nhours)
+    pressure = zeros(typeof(0.0u"Pa"), nhours)
+    cloud_cover = zeros_float(nhours)
+    global_radiation = zeros(typeof(0.0u"W/m^2"), nhours)
+    longwave_radiation = zeros(typeof(0.0u"W/m^2"), nhours)
+    rainfall = zeros(typeof(0.0u"kg/m^2"), nhours)
+    zenith_angle = zeros(typeof(0.0u"°"), nhours)
 
     # Hourly intermediates feeding the small derivation chain.
-    u_wind                 = zeros(typeof(0.0u"m/s"),    nhours)
-    v_wind                 = zeros(typeof(0.0u"m/s"),    nhours)
-    dewpoint_temperature   = zeros(typeof(0.0u"K"),      nhours)
-    actual_vapour_pressure = zeros(typeof(0.0u"kPa"),    nhours)
+    u_wind = zeros(typeof(0.0u"m/s"), nhours)
+    v_wind = zeros(typeof(0.0u"m/s"), nhours)
+    dewpoint_temperature = zeros(typeof(0.0u"K"), nhours)
+    actual_vapour_pressure = zeros(typeof(0.0u"kPa"), nhours)
 
     # `environment_daily` lives at 365/year — aggregated from hourly.
-    rainfall_daily         = zeros(typeof(0.0u"kg/m^2"), ndays)
-    deep_soil_temperature  = zeros(typeof(0.0u"K"),      ndays)
+    rainfall_daily = zeros(typeof(0.0u"kg/m^2"), ndays)
+    deep_soil_temperature = zeros(typeof(0.0u"K"), ndays)
 
     days_of_year = repeat(1:365, nyears)
 
     environment_daily = DailyTimeseries(;
-        shade                 = zeros_float(ndays),
-        soil_wetness          = zeros_float(ndays),
-        surface_emissivity    = fill(0.95, ndays),
-        cloud_emissivity      = fill(0.95, ndays),
-        rainfall              = rainfall_daily,
+        shade = zeros_float(ndays),
+        soil_wetness = zeros_float(ndays),
+        surface_emissivity = fill(0.95, ndays),
+        cloud_emissivity = fill(0.95, ndays),
+        rainfall = rainfall_daily,
         deep_soil_temperature,
-        leaf_area_index       = fill(0.1, ndays),
+        leaf_area_index = fill(0.1, ndays),
     )
     # All HourlyTimeseries fields populated — solver dispatches on the
     # `environment_minmax::Nothing` method and reads everything from here.
@@ -666,8 +666,8 @@ function assemble_weather!(
 )
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
-    variables    = weather_variables(source)
-    spy          = steps_per_year(temporal_resolution(source))
+    variables = weather_variables(source)
+    spy = steps_per_year(temporal_resolution(source))
 
     ctx = (;
         site, grid_elevation, lapse_rate_model, vapour_pressure_method,
@@ -711,10 +711,10 @@ end
 
 @inline function _read_one_variable!(buffers, weather,
                                      var::WeatherVariable{Name, Field}, I) where {Name, Field}
-    target    = getproperty(buffers, Name)
-    layer     = getproperty(weather, Field)
+    target = getproperty(buffers, Name)
+    layer = getproperty(weather, Field)
     transform = var.transform
-    unit      = var.unit
+    unit = var.unit
     # Splat the spatial dim tuple from `DimIndices`; `Ti(k)` selects the
     # k-th timestep regardless of how `layer` stores its dims.
     @inbounds for k in eachindex(target)
@@ -788,7 +788,7 @@ end
     _name_matches(v, first(vars)) || _is_native(v, Base.tail(vars))
 
 @inline _name_matches(::Val{N}, ::WeatherVariable{N}) where {N} = true
-@inline _name_matches(::Val,    ::WeatherVariable)              = false
+@inline _name_matches(::Val, ::WeatherVariable) = false
 
 # ---------------------------------------------------------------------------
 # Derivations
@@ -899,7 +899,7 @@ function derive!(::Val{:cloud_cover}, buffers, ctx)
         buffers.downward_shortwave_radiation, flat_terrain, buffers.days_of_year,
         scratch.solar.buffers;
         solar_model = scratch.cloud_constants.solar_model,
-        hours       = scratch.cloud_constants.hours,
+        hours = scratch.cloud_constants.hours,
     )
     return nothing
 end
@@ -915,7 +915,7 @@ function derive!(::Val{:cloud_max}, buffers, ctx)
 end
 
 function derive!(::Val{:deep_soil_temperature}, buffers, ctx)
-    spy    = ctx.steps_per_year
+    spy = ctx.steps_per_year
     nyears = length(buffers.mean_temperature) ÷ spy
     _annual_means!(buffers.deep_soil_temperature,
                    buffers.mean_temperature, nyears, spy)
@@ -965,7 +965,7 @@ function derive!(::Val{:rainfall_daily_from_hourly}, buffers, ctx)
     ndays = length(buffers.rainfall_daily)
     @inbounds for d in 1:ndays
         h0 = (d - 1) * 24
-        s  = zero(eltype(buffers.rainfall))
+        s = zero(eltype(buffers.rainfall))
         for h in 1:24
             s += buffers.rainfall[h0 + h]
         end
@@ -1004,7 +1004,7 @@ end
 Derive monthly relative humidity following NicheMapR's micro_terra.R:
   actual_vapour_pressure = saturation_vapour_pressure(mean_temperature)
                            − vapour_pressure_deficit
-  relative_humidity      = actual_vapour_pressure
+  relative_humidity = actual_vapour_pressure
                            / saturation_vapour_pressure(reference_temperature)
 
 Pass `reference_temperature = minimum_temperature` for RH_max and

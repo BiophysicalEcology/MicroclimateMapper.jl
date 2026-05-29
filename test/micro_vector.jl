@@ -82,8 +82,8 @@ end
     pdim = _make_points_dim(POINTS)
     xs = 146.00:0.01:146.10
     ys = -36.00:0.01:-35.90
-    a  = Raster([x for x in xs, _ in ys], (X(xs), Y(ys)); name = :a)
-    b  = Raster([y for _ in xs, y in ys], (X(xs), Y(ys)); name = :b)
+    a = Raster([x for x in xs, _ in ys], (X(xs), Y(ys)); name = :a)
+    b = Raster([y for _ in xs, y in ys], (X(xs), Y(ys)); name = :b)
     stack = RasterStack((; a, b))
     out = _stack_to_points(stack, pdim)
     @test keys(out) == (:a, :b)
@@ -94,8 +94,8 @@ end
 @testset "MicroVectorProblem construction" begin
     inner = example_microclimate_problem().model
     model = MicroMapModel(;
-        micro_model    = inner,
-        dem_source     = SRTM,
+        micro_model = inner,
+        dem_source = SRTM,
         weather_source = TerraClimate{Historical},
     )
     years = 2000:2000

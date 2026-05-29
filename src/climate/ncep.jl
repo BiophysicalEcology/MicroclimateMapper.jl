@@ -24,18 +24,18 @@ _extra_getraster_kwargs(::Type{<:NCEP}) = (; dataset = "reanalysis")
 
 function weather_variables(::Type{<:NCEP{SurfaceGauss}})
     (
-        WeatherVariable(:maximum_temperature,          :tmax,     u"K"),
-        WeatherVariable(:minimum_temperature,          :tmin,     u"K"),
+        WeatherVariable(:maximum_temperature, :tmax, u"K"),
+        WeatherVariable(:minimum_temperature, :tmin, u"K"),
         # Wind as horizontal vector components — combined to scalar speed
         # by `derive!(:wind_speed)`.
-        WeatherVariable(:u_wind,                       :uwnd_10m, u"m/s"),
-        WeatherVariable(:v_wind,                       :vwnd_10m, u"m/s"),
+        WeatherVariable(:u_wind, :uwnd_10m, u"m/s"),
+        WeatherVariable(:v_wind, :vwnd_10m, u"m/s"),
         # Specific humidity (kg/kg) and surface pressure (Pa) feed
         # `derive!(:actual_vapour_pressure)`, which then feeds
         # `derive!(:vapour_pressure_deficit)` and the RH derivations.
-        WeatherVariable(:specific_humidity,            :shum_2m,  1),
-        WeatherVariable(:surface_pressure,             :pres,     u"Pa"),
-        WeatherVariable(:downward_shortwave_radiation, :dswrf,    u"W/m^2"),
+        WeatherVariable(:specific_humidity, :shum_2m, 1),
+        WeatherVariable(:surface_pressure, :pres, u"Pa"),
+        WeatherVariable(:downward_shortwave_radiation, :dswrf, u"W/m^2"),
         # `:prate` is precipitation mass flux (kg/m²/s); per day that's
         # `rate × 86400 s` in kg/m². The aggregated daily total then maps
         # straight to `rainfall`.

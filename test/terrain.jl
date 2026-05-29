@@ -28,11 +28,11 @@ end
         (:elevation, :slope, :aspect, :latitude, :longitude,
          :atmospheric_pressure, :horizon_angles)
     @test size(grids.elevation) == (5, 5)
-    @test unit(eltype(grids.elevation))  == u"m"
-    @test unit(eltype(grids.slope))      == u"°"
-    @test unit(eltype(grids.aspect))     == u"°"
-    @test unit(eltype(grids.latitude))   == u"°"
-    @test unit(eltype(grids.longitude))  == u"°"
+    @test unit(eltype(grids.elevation)) == u"m"
+    @test unit(eltype(grids.slope)) == u"°"
+    @test unit(eltype(grids.aspect)) == u"°"
+    @test unit(eltype(grids.latitude)) == u"°"
+    @test unit(eltype(grids.longitude)) == u"°"
     @test unit(eltype(grids.atmospheric_pressure)) == u"Pa"
 
     # Flat terrain → zero slope everywhere away from the edges (edge cells

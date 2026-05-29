@@ -22,7 +22,10 @@ Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
 extent, time range, initial conditions, and any per-run data overrides.
 
 - `model::MicroMapModel`
-- `area::Extents.Extent` — spatial extent (X = longitude, Y = latitude)
+- `area` — `Extents.Extent` (run every pixel of the template) or any
+  GeoInterface-conformant geometry (rasterised into a Bool mask via
+  `Rasters.boolmask`; pixels outside the geometry are skipped and left
+  as `missing` in the output)
 - `years::AbstractRange`
 - `template` — spatial grid the run executes on. Required; no fallback.
     * `Type{<:RasterDataSource}` (e.g. `SRTM`) — load that dataset over
@@ -94,12 +97,10 @@ _resolve_template(r::Raster, _area) = hasdim(r, Ti) ? view(r, Ti(1)) : r
 function _resolve_template(source::Type{<:RasterDataSources.RasterDataSource}, area::Extent)
     kwargs = :extent in RasterDataSources.getraster_keywords(source) ?
         (; extent = area, lazy = true) : (; lazy = true)
-    return crop(Raster(source; kwargs...); to = area, touches = true)
+    cropped = crop(Raster(source; kwargs...); to = area, touches = true)
+    # Pass to _resolve_template in case it needs Ti dim removed
+    return _resolve_template(cropped, nothing)
 end
-
-# One-line description of the template for `show`.
-_template_label(r::Raster) = "user Raster ($(size(r, X))×$(size(r, Y)))"
-_template_label(source::Type{<:RasterDataSources.RasterDataSource}) = string(source)
 
 # Degree buffer applied to the weather load area. Needs to be wide enough
 # that the cubic-spline resample kernel (4-cell footprint) has source
@@ -158,8 +159,8 @@ function _regular_sampled(lk)
             order = ForwardOrdered(), span = Regular(1.0))
     end
     step = (Float64(vals[end]) - Float64(vals[1])) / (n - 1)
-    rng  = range(Float64(vals[1]); step = step, length = n)
-    ord  = step < 0 ? ReverseOrdered() : ForwardOrdered()
+    rng = range(Float64(vals[1]); step = step, length = n)
+    ord = step < 0 ? ReverseOrdered() : ForwardOrdered()
     return Sampled(rng; sampling = Intervals(Center()),
         order = ord, span = Regular(step))
 end
@@ -193,23 +194,26 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # used by `_resample_weather_to_template` has source cells beyond
     # the template edges; without the buffer the spline degenerates to
     # nearest at the boundary.
+    # `area` may be a geometry; loaders need an Extent, but the mask uses the geometry itself.
+    extent = _to_extent(area)
     buffer_deg = weather_area_buffer(weather_source)
-    weather_area = Extents.buffer(area,
-        (X = buffer_deg, Y = buffer_deg))
-    weather     = _resolve_weather(data, weather_source, weather_area, years)
-    dem_native  = _resolve_dem(data, dem_source, area)
-    template_2d = _resolve_template(problem.template, area)
-    weather     = _resample_weather_to_template(weather, template_2d)
-    template    = first(values(weather))
-    terrain     = compute_terrain_grids(dem_native;
+    weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
+    weather = _resolve_weather(data, weather_source, weather_area, years)
+    dem_native = _resolve_dem(data, dem_source, extent)
+    template_2d = _resolve_template(problem.template, extent)
+    weather = _resample_weather_to_template(weather, template_2d)
+    template = first(values(weather))
+    terrain = compute_terrain_grids(dem_native;
         template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
 
-    albedo_data    = get(data, :surface_albedo,   nothing)
+    mask = _build_area_mask(area, template_2d)
+
+    albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
-    albedo_grid    = _resolve_surface_grid(albedo_data, surface_albedo_source,
-        landcover_source, template, area, default_landcover_albedo)
+    albedo_grid = _resolve_surface_grid(albedo_data, surface_albedo_source,
+        landcover_source, template, extent, default_landcover_albedo)
     roughness_grid = _resolve_surface_grid(roughness_data, roughness_height_source,
-        landcover_source, template, area, default_landcover_roughness)
+        landcover_source, template, extent, default_landcover_roughness)
 
     canonical_overrides = _resample_canonical_overrides(_canonical_data(data), template)
 
@@ -222,7 +226,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
-        canonical_overrides, cache_pool,
+        canonical_overrides, mask, cache_pool,
         (; init_inputs, build_inputs),
         cloud_constants,
     )
@@ -246,7 +250,7 @@ function Base.show(io::IO, ::MIME"text/plain", problem::MicroRasterProblem)
     println(io, "  template: ", _template_label(problem.template))
     println(io)
     println(io, "forcings:")
-    _print_role_table(io, _role_statuses(problem))
+    _print_forcing_table(io, _forcing_origins(problem))
     _print_overrides(io, problem.data, "")
     _print_problem_init(io, problem)
 end
@@ -258,6 +262,11 @@ function Base.show(io::IO, ::MIME"text/plain", cache::MicroMapCache{<:MicroRaste
     println(io, "  cache_pool:  ", cache.cache_pool.sz_max, " workers")
     println(io)
     println(io, "forcings:")
-    _print_role_table(io, _role_statuses(problem))
+    _print_forcing_table(io, _forcing_origins(problem))
     _print_overrides(io, problem.data, "")
 end
+
+
+# One-line description of the template for `show`.
+_template_label(r::Raster) = "user Raster ($(size(r, X))×$(size(r, Y)))"
+_template_label(source::Type{<:RasterDataSources.RasterDataSource}) = string(source)

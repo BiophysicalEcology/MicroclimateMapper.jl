@@ -3,7 +3,7 @@
 # Shared types and scaffolding for the two declarative microclimate-simulation
 # entry points:
 #
-#   MicroRasterProblem (grid mode,   src/micro_raster.jl)
+#   MicroRasterProblem (grid mode, src/micro_raster.jl)
 #   MicroVectorProblem (points mode, src/micro_vector.jl)
 #
 # Both produce a `MicroMapCache` and run through the same `solve!` /
@@ -39,15 +39,15 @@ LayerSpec(name::Symbol, kind::Symbol) = LayerSpec{name, kind}()
 @inline _layer_source(result, ::LayerSpec{N}) where N = getproperty(result, N)
 
 const _DEFAULT_OUTPUT_LAYERS = (
-    LayerSpec(:soil_temperature,  :soil),
-    LayerSpec(:soil_moisture,     :soil),
-    LayerSpec(:air_temperature,   :profile),
+    LayerSpec(:soil_temperature, :soil),
+    LayerSpec(:soil_moisture, :soil),
+    LayerSpec(:air_temperature, :profile),
     LayerSpec(:relative_humidity, :profile),
-    LayerSpec(:wind_speed,        :profile),
-    LayerSpec(:surface_water,     :scalar),
-    LayerSpec(:global_radiation,  :scalar),
-    LayerSpec(:sky_temperature,   :scalar),
-    LayerSpec(:snow_depth,        :scalar),
+    LayerSpec(:wind_speed, :profile),
+    LayerSpec(:surface_water, :scalar),
+    LayerSpec(:global_radiation, :scalar),
+    LayerSpec(:sky_temperature, :scalar),
+    LayerSpec(:snow_depth, :scalar),
 )
 
 # ---------------------------------------------------------------------------
@@ -102,13 +102,14 @@ end
 # the spatial dim differs (`(X, Y)` vs `(Dim{:point},)`); every solve-time
 # code path indexes via `I::Tuple` of dim wrappers from `DimIndices`, so the
 # loop body is mode-agnostic.
-mutable struct MicroMapCache{P,W,T,A,R,CO,POOL,SC,CC}
+mutable struct MicroMapCache{P,W,T,A,R,CO,M,POOL,SC,CC}
     problem::P                       # MicroRasterProblem/MicroVectorProblem
     weather::W                       # RasterStack
     terrain::T                       # RasterStack
     albedo_grid::A                   # Raster
     roughness_grid::R                # Raster
     canonical_overrides::CO          # NamedTuple of pre-extracted Rasters
+    mask::M                          # nothing, or a 2-D Bool Raster (X, Y)
     cache_pool::POOL                 # Channel{(; micro::MicroCache, scratch)}
     init_inputs::SC                  # Resolved initial conditions + build_inputs closure
     cloud_constants::CC              # Shared SolarRadiation constants
@@ -140,13 +141,13 @@ end
 # NamedTuple.
 const _DEFAULT_INIT = (
     soil_temperature = nothing,
-    soil_moisture    = nothing,
-    snow_depth       = nothing,
+    soil_moisture = nothing,
+    snow_depth = nothing,
     snow_temperature = nothing,
-    snow_density     = nothing,
+    snow_density = nothing,
 )
 _resolve_init(it::NamedTuple, _) = merge(_DEFAULT_INIT, it)
-_resolve_init(::Nothing, _)      = _DEFAULT_INIT
+_resolve_init(::Nothing, _) = _DEFAULT_INIT
 
 # Does the run actually have a `:soil_moisture` value to read? True iff
 # the weather source declares it as a canonical variable or the user
@@ -183,6 +184,25 @@ _resolve_dem(data::NamedTuple, source, area) =
 
 _resolve_weather(data::NamedTuple, source, area, years) =
     haskey(data, :weather) ? data.weather : _load_weather(source, area, years)
+
+# Normalise `area` to an Extent for loaders; geometry is kept separately for the mask.
+_to_extent(area::Extent) = area
+_to_extent(area) = GeoInterface.extent(area)
+
+# `Extent` area = no mask (run every pixel); geometry = rasterise into a Bool mask.
+_build_area_mask(::Extent, _template) = nothing
+_build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
+
+@inline _is_active(_I::Tuple, ::Nothing) = true
+@inline _is_active(I::Tuple, mask) = mask[I...]
+
+_first_active_index(rast, ::Nothing) = first(DimIndices(rast))
+function _first_active_index(rast, mask)
+    for I in DimIndices(rast)
+        mask[I...] && return I
+    end
+    error("Area mask excludes every pixel of the template — nothing to solve.")
+end
 
 # ---------------------------------------------------------------------------
 # Native surface-property resolution
@@ -221,9 +241,9 @@ function _resolve_surface_native(
     landcover_source::Type{<:RasterDataSources.RasterDataSource},
     area, _default_fn,
 )
-    landcover       = load_landcover(landcover_source, area)
+    landcover = load_landcover(landcover_source, area)
     weighted_native = landcover_weighted(landcover, weights, landcover_source)
-    spatial_dims    = commondims(landcover, (X(), Y()))
+    spatial_dims = commondims(landcover, (X(), Y()))
     return _wrap_native_raster(weighted_native, spatial_dims)
 end
 # `Type{<:RasterDataSource}` as the property *source* itself (not landcover):
@@ -270,11 +290,11 @@ function _build_inputs_and_pool(;
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
     resolution = temporal_resolution(weather_source)
-    ndays  = steps_per_year(resolution) * length(years)
-    days   = _days_of_year(resolution, length(years))
+    ndays = steps_per_year(resolution) * length(years)
+    days = _days_of_year(resolution, length(years))
     time_mode = _time_mode(resolution)
     nsteps = length(cloud_constants.hours) * ndays
-    nmax   = cloud_constants.solar_model.wavelength_count
+    nmax = cloud_constants.solar_model.wavelength_count
     allocate_scratch() = (;
         weather = allocate_weather_buffers(weather_source, length(years)),
         solar = (;
@@ -312,9 +332,9 @@ function _build_inputs_and_pool(;
             env.environment_minmax, env.environment_daily, env.environment_hourly,
             initial_soil_temperature = init_inputs.soil_temperature,
             initial_soil_moisture,
-            initial_snow_depth       = something(init_inputs.snow_depth,       0.0u"cm"),
+            initial_snow_depth = something(init_inputs.snow_depth, 0.0u"cm"),
             initial_snow_temperature = something(init_inputs.snow_temperature, u"K"(0.0u"°C")),
-            initial_snow_density     = init_inputs.snow_density,
+            initial_snow_density = init_inputs.snow_density,
         )
     end
 
@@ -359,9 +379,9 @@ function CommonSolve.solve!(cache::MicroMapCache)
     try
         layers = cache.problem.model.output_layers
         output = _allocate_output(cache.problem.model.micro_model, proto.micro.problem.days,
-            cache.terrain, first_result, layers, first(cache.problem.years))
+            cache.terrain, first_result, layers, first(cache.problem.years), cache.mask)
         _write_output!(output, first_result, layers, first_I)
-        return _solve_remaining!(output, cache, proto)
+        return _solve_remaining!(output, cache, proto, first_I)
     catch
         put!(cache.cache_pool, proto)
         rethrow()
@@ -373,36 +393,38 @@ function CommonSolve.solve!(output::RasterStack, cache::MicroMapCache)
     try
         layers = cache.problem.model.output_layers
         _write_output!(output, first_result, layers, first_I)
-        return _solve_remaining!(output, cache, proto)
+        return _solve_remaining!(output, cache, proto, first_I)
     catch
         put!(cache.cache_pool, proto)
         rethrow()
     end
 end
 
-# Pull worker #1 from the pool, solve the first pixel with it, return
+# Pull worker #1 from the pool, solve the first active pixel with it, return
 # the worker + its result for output sizing/writing. The caller is
 # responsible for returning the worker to the pool (via `_solve_remaining!`
 # or its catch path).
 function _solve_proto_pixel!(cache)
-    first_I = first(DimIndices(cache.terrain.elevation))
+    first_I = _first_active_index(cache.terrain.elevation, cache.mask)
     proto = take!(cache.cache_pool)
     reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, first_I))
     solve!(proto.micro)
     return proto, first_I, proto.micro.output
 end
 
-function _solve_remaining!(output, cache, proto)
+function _solve_remaining!(output, cache, proto, first_I)
     cache_pool = cache.cache_pool
-    layers     = cache.problem.model.output_layers
+    layers = cache.problem.model.output_layers
     build_inputs = cache.init_inputs.build_inputs
+    mask = cache.mask
     put!(cache_pool, proto)
 
     pixel_indices = DimIndices(cache.terrain.elevation)
     npixels = length(pixel_indices)
     work = Channel{eltype(pixel_indices)}(max(npixels - 1, 1))
-    for (k, I) in enumerate(pixel_indices)
-        k == 1 && continue
+    for I in pixel_indices
+        I == first_I && continue
+        _is_active(I, mask) || continue
         put!(work, I)
     end
     close(work)
@@ -429,16 +451,16 @@ end
 # Output stack allocation and per-pixel writes
 # ---------------------------------------------------------------------------
 
-function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple, year::Integer)
+function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple, year::Integer, mask)
     spatial_dims = dims(terrain.elevation)
     ti = Ti(_ti_datetime_axis(year, days, model.hours))
     extra = (
-        soil    = (ti, Dim{:depth}(model.depths)),
+        soil = (ti, Dim{:depth}(model.depths)),
         profile = (ti, Dim{:height}(model.heights)),
-        scalar  = (ti,),
+        scalar = (ti,),
     )
     return RasterStack(NamedTuple(map(layers) do spec
-        _layer_name(spec) => _allocate_layer(proto, spec, spatial_dims, extra)
+        _layer_name(spec) => _allocate_layer(proto, spec, spatial_dims, extra, mask)
     end))
 end
 
@@ -458,11 +480,15 @@ function _ti_datetime_axis(year::Integer, days::AbstractVector{<:Integer},
     return out
 end
 
-function _allocate_layer(proto, spec::LayerSpec{<:Any, K}, spatial_dims, extra) where K
-    T  = typeof(first(_layer_source(proto, spec)))
+function _allocate_layer(proto, spec::LayerSpec{<:Any, K}, spatial_dims, extra, mask) where K
+    T = typeof(first(_layer_source(proto, spec)))
     ds = (spatial_dims..., extra[K]...)
-    return Raster(zeros(T, map(length, ds)...), ds)
+    return _allocate_layer_array(T, ds, mask)
 end
+
+_allocate_layer_array(T, ds, ::Nothing) = Raster(zeros(T, map(length, ds)...), ds)
+_allocate_layer_array(T, ds, _mask) =
+    Rasters.create(nothing, T, ds; missingval = missing, fill = missing)
 
 # `I` is a tuple of dim selectors from `DimIndices`: `(X(i), Y(j))` in grid
 # mode, `(Dim{:point}(p),)` in points mode. The spatial axes are addressed
@@ -500,82 +526,76 @@ end
 # Show helpers (shared)
 # ---------------------------------------------------------------------------
 
-# Each forcing has a "status" — where the value will come from at solve
-# time. `_role_status` classifies each role purely from the model;
-# `_role_statuses(problem)` overlays the problem's `data` overrides on top.
-
-_role_status(::Val{:dem}, model) =
-    _source_status(model.dem_source, "data.dem")
-_role_status(::Val{:weather}, model) =
-    _source_status(model.weather_source, "data.weather")
-_role_status(::Val{:landcover}, model) =
+# Each forcing has an origin describing where its value comes from at solve
+# time. `_forcing_origin` classifies the origin from the model alone;
+# `_forcing_origins(problem)` overlays the problem's `data` overrides on top.
+_forcing_origin(::Val{:dem}, model) = _source_origin(model.dem_source, "data.dem")
+_forcing_origin(::Val{:weather}, model) = _source_origin(model.weather_source, "data.weather")
+_forcing_origin(::Val{:landcover}, model) =
     model.landcover_source === nothing ?
         (label = "(none)", missing = false) :
         (label = string(model.landcover_source), missing = false)
-_role_status(::Val{:surface_albedo}, model) =
-    _surface_property_status(model.surface_albedo_source, model.landcover_source,
-                             :surface_albedo)
-_role_status(::Val{:roughness_height}, model) =
-    _surface_property_status(model.roughness_height_source, model.landcover_source,
-                             :roughness_height)
+_forcing_origin(::Val{:surface_albedo}, model) =
+    _surface_property_origin(model.surface_albedo_source, model.landcover_source, :surface_albedo)
+_forcing_origin(::Val{:roughness_height}, model) =
+    _surface_property_origin(model.roughness_height_source, model.landcover_source, :roughness_height)
 
-_source_status(::Nothing, data_key::String) =
-    (label = "<missing — pass `$data_key`>", missing = true)
-_source_status(source, _) =
-    (label = string(source), missing = false)
-
-_surface_property_status(::Nothing, ::Nothing, key) =
-    (label = "<missing — pass landcover_source or `data.$key`>", missing = true)
-_surface_property_status(::Nothing, lc, _) =
-    (label = "from $lc defaults", missing = false)
-_surface_property_status(::NamedTuple, ::Nothing, key) =
-    (label = "<missing landcover_source for class weights>", missing = true)
-_surface_property_status(::NamedTuple, lc, _) =
-    (label = "user weights via $lc", missing = false)
-_surface_property_status(s::Type{<:RasterDataSources.RasterDataSource}, _, _) =
-    (label = "from $s", missing = false)
-_surface_property_status(::Raster, _, _) =
-    (label = "user Raster", missing = false)
-_surface_property_status(v, _, _) =
-    (label = "constant $v", missing = false)
-
-const _ROLES = (:dem, :weather, :landcover, :surface_albedo, :roughness_height)
-
-# Apply problem.data overrides over the model-level role statuses. An
-# override for a special key replaces the model's label with "user override".
-function _role_statuses(problem)
+# Apply problem.data overrides over the model-level origins. An override
+# for a special key replaces the model's label with "user override".
+function _forcing_origins(problem)
     data = problem.data
-    map(_ROLES) do role
-        status = _role_status(Val(role), problem.model)
-        if haskey(data, role)
-            return (role, (label = "user override (was: $(status.label))", missing = false))
+    map(_FORCINGS) do forcing
+        origin = _forcing_origin(Val(forcing), problem.model)
+        if haskey(data, forcing)
+            return (forcing, (label = "user override (was: $(origin.label))", missing = false))
         end
-        return (role, status)
+        return (forcing, origin)
     end
 end
+
+_source_origin(::Nothing, data_key::String) =
+    (label = "<missing — pass `$data_key`>", missing = true)
+_source_origin(source, _) = (label = string(source), missing = false)
+
+_surface_property_origin(::Nothing, ::Nothing, key) =
+    (label = "<missing — pass landcover_source or `data.$key`>", missing = true)
+_surface_property_origin(::Nothing, lc, _) =
+    (label = "from $lc defaults", missing = false)
+_surface_property_origin(::NamedTuple, ::Nothing, key) =
+    (label = "<missing landcover_source for class weights>", missing = true)
+_surface_property_origin(::NamedTuple, lc, _) =
+    (label = "user weights via $lc", missing = false)
+_surface_property_origin(s::Type{<:RasterDataSources.RasterDataSource}, _, _) =
+    (label = "from $s", missing = false)
+_surface_property_origin(::Raster, _, _) =
+    (label = "user Raster", missing = false)
+_surface_property_origin(v, _, _) =
+    (label = "constant $v", missing = false)
+
+const _FORCINGS = (:dem, :weather, :landcover, :surface_albedo, :roughness_height)
 
 function Base.show(io::IO, ::MIME"text/plain", model::MicroMapModel)
     println(io, "MicroMapModel")
-    statuses = map(role -> (role, _role_status(Val(role), model)), _ROLES)
-    _print_role_table(io, statuses)
+    origins = map(forcing -> (forcing, _forcing_origin(Val(forcing), model)), _FORCINGS)
+    _print_forcing_table(io, origins)
     println(io, "  lapse_rate_model:  ", model.lapse_rate_model)
     println(io, "  output_layers:     ",
             join((_layer_name(spec) for spec in model.output_layers), ", "))
-    missing_roles = [string(role) for (role, s) in statuses if s.missing]
-    if !isempty(missing_roles)
+    missing_forcings = [string(forcing) for (forcing, o) in origins if o.missing]
+    if !isempty(missing_forcings)
         println(io)
         println(io, "missing — pass via `data` on the problem:")
-        for role in missing_roles
-            println(io, "  ", role)
+        for forcing in missing_forcings
+            println(io, "  ", forcing)
         end
     end
 end
 
-function _print_role_table(io::IO, statuses)
-    width = maximum(length(string(role)) for (role, _) in statuses)
-    for (role, status) in statuses
-        marker = status.missing ? "⚠ " : "  "
-        println(io, "  ", marker, rpad(string(role) * ":", width + 2), " ", status.label)
+function _print_forcing_table(io::IO, origins)
+    width = maximum(length(string(forcing)) for (forcing, _) in origins)
+    for (forcing, origin) in origins
+        marker = origin.missing ? "⚠ " : "  "
+        println(io, "  ", marker, rpad(string(forcing) * ":", width + 2), " ", origin.label)
     end
 end
 

@@ -14,13 +14,13 @@ weather_loader(::Type{<:TerraClimate}) = YearlyTimeSeries()
 
 function weather_variables(::Type{<:TerraClimate})
     (
-        WeatherVariable(:maximum_temperature,          :tmax, u"°C"),
-        WeatherVariable(:minimum_temperature,          :tmin, u"°C"),
-        WeatherVariable(:wind_speed,                   :ws,   u"m/s"),
-        WeatherVariable(:vapour_pressure_deficit,      :vpd,  u"kPa"),
+        WeatherVariable(:maximum_temperature, :tmax, u"°C"),
+        WeatherVariable(:minimum_temperature, :tmin, u"°C"),
+        WeatherVariable(:wind_speed, :ws, u"m/s"),
+        WeatherVariable(:vapour_pressure_deficit, :vpd, u"kPa"),
         WeatherVariable(:downward_shortwave_radiation, :srad, u"W/m^2"),
-        WeatherVariable(:rainfall,                     :ppt,  u"kg/m^2"),
-        WeatherVariable(:soil_moisture,                :soil, 1,
+        WeatherVariable(:rainfall, :ppt, u"kg/m^2"),
+        WeatherVariable(:soil_moisture, :soil, 1,
                         raw -> raw * _TERRACLIMATE_SOIL_TO_VOLUMETRIC),
     )
 end

@@ -9,34 +9,34 @@
 
 # FIXME: these are guesses
 default_landcover_albedo(::Type{<:EarthEnv{<:LandCover}}) = (
-    needleleaf_trees          = 0.09,
+    needleleaf_trees = 0.09,
     evergreen_broadleaf_trees = 0.13,
     deciduous_broadleaf_trees = 0.16,
-    other_trees               = 0.13,
-    shrubs                    = 0.20,
-    herbaceous                = 0.23,
-    cultivated_and_managed    = 0.20,
-    regularly_flooded         = 0.12,
-    urban_builtup             = 0.15,
-    snow_ice                  = 0.70,
-    barren                    = 0.30,
-    open_water                = 0.06,
+    other_trees = 0.13,
+    shrubs = 0.20,
+    herbaceous = 0.23,
+    cultivated_and_managed = 0.20,
+    regularly_flooded = 0.12,
+    urban_builtup = 0.15,
+    snow_ice = 0.70,
+    barren = 0.30,
+    open_water = 0.06,
 )
 
 # FIXME: these are guesses
 default_landcover_roughness(::Type{<:EarthEnv{<:LandCover}}) = (
-    needleleaf_trees          = 1.0u"m",
+    needleleaf_trees = 1.0u"m",
     evergreen_broadleaf_trees = 2.0u"m",
     deciduous_broadleaf_trees = 1.5u"m",
-    other_trees               = 1.2u"m",
-    shrubs                    = 0.10u"m",
-    herbaceous                = 0.03u"m",
-    cultivated_and_managed    = 0.05u"m",
-    regularly_flooded         = 0.05u"m",
-    urban_builtup             = 1.0u"m",
-    snow_ice                  = 0.001u"m",
-    barren                    = 0.005u"m",
-    open_water                = 0.0002u"m",
+    other_trees = 1.2u"m",
+    shrubs = 0.10u"m",
+    herbaceous = 0.03u"m",
+    cultivated_and_managed = 0.05u"m",
+    regularly_flooded = 0.05u"m",
+    urban_builtup = 1.0u"m",
+    snow_ice = 0.001u"m",
+    barren = 0.005u"m",
+    open_water = 0.0002u"m",
 )
 
 """

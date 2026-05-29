@@ -53,8 +53,8 @@ end
     ], xy_dims())
     weights = (
         deciduous_broadleaf_forest = 0.10,
-        croplands                  = 0.20,
-        water_bodies               = 0.06,
+        croplands = 0.20,
+        water_bodies = 0.06,
     )
 
     out = landcover_weighted(raster, weights, MODIS{MCD12Q1})
@@ -75,8 +75,8 @@ end
     # Units propagate.
     weights_m = (
         deciduous_broadleaf_forest = 1.0u"m",
-        croplands                  = 0.05u"m",
-        water_bodies               = 0.0002u"m",
+        croplands = 0.05u"m",
+        water_bodies = 0.0002u"m",
     )
     out_m = landcover_weighted(raster, weights_m, MODIS{MCD12Q1})
     @test eltype(out_m) <: Quantity
@@ -87,7 +87,7 @@ end
     # Dispatch wiring: every supported land-cover source must declare both
     # an albedo and a roughness table whose keys match.
     for src in (EarthEnv{LandCover}, MODIS{MCD12Q1})
-        albedo    = default_landcover_albedo(src)
+        albedo = default_landcover_albedo(src)
         roughness = default_landcover_roughness(src)
         @test keys(albedo) == keys(roughness)
         @test all(0 .<= values(albedo) .<= 1)

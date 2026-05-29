@@ -127,8 +127,8 @@ include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
-include("micro_common.jl")
-include("micro_raster.jl")
-include("micro_vector.jl")
+include("common.jl")
+include("raster.jl")
+include("vector.jl")
 
 end

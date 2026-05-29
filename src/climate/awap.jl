@@ -10,14 +10,14 @@
 # is left unused.
 
 temporal_resolution(::Type{<:AWAP}) = DailyResolution()
-weather_loader(::Type{<:AWAP})      = DailyFiles()
+weather_loader(::Type{<:AWAP}) = DailyFiles()
 
 function weather_variables(::Type{<:AWAP})
     (
-        WeatherVariable(:maximum_temperature, :tmax,       u"°C"),
-        WeatherVariable(:minimum_temperature, :tmin,       u"°C"),
+        WeatherVariable(:maximum_temperature, :tmax, u"°C"),
+        WeatherVariable(:minimum_temperature, :tmin, u"°C"),
         # `:rainfall` is mm/day depth; numerically equal to kg/m^2.
-        WeatherVariable(:rainfall,            :rainfall,   u"kg/m^2"),
+        WeatherVariable(:rainfall, :rainfall, u"kg/m^2"),
         # AWAP solar is MJ/(m^2·day); Unitful converts to W/m^2 on
         # assignment to the canonical buffer.
         WeatherVariable(:downward_shortwave_radiation, :solar, u"MJ/m^2/d"),

@@ -27,7 +27,7 @@ end
 
 function _plot_inputs!(fig, cache, requested_layers; rplot_kw...)
     all_layers = _collect_input_layers(cache)
-    selected   = _select_layers(all_layers, requested_layers)
+    selected = _select_layers(all_layers, requested_layers)
     isempty(selected) && return fig
 
     # Build the time slider only if any selected layer varies in time.
@@ -76,7 +76,7 @@ function _collect_input_layers(cache)
         end
     end
 
-    cache.albedo_grid    === nothing || push!(pairs, :surface_albedo   => cache.albedo_grid)
+    cache.albedo_grid === nothing || push!(pairs, :surface_albedo => cache.albedo_grid)
     cache.roughness_grid === nothing || push!(pairs, :roughness_height => cache.roughness_grid)
 
     # Native weather stack — use canonical variable names as labels (e.g.

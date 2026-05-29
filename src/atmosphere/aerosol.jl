@@ -11,7 +11,7 @@
 
 """
     get_aerosol_optical_depth(point, relative_humidity, month;
-        gads_file   = joinpath(homedir(), "Spatial_Data", "gads", "gads.nc"),
+        gads_file = joinpath(homedir(), "Spatial_Data", "gads", "gads.nc"),
         interpolate = true,
         wavelengths = SolarRadiation.DEFAULT_WAVELENGTHS,
     ) -> Vector{Float64}
@@ -49,10 +49,10 @@ result = simulate_microclimate(solar_terrain, micro_terrain, soil, weather;
 function get_aerosol_optical_depth(
     point             ,
     relative_humidity :: Real,
-    month             :: Int;
-    gads_file   :: AbstractString = joinpath(get(ENV, "RASTERDATASOURCES_PATH", homedir()), "gads", "gads.nc"),
-    interpolate :: Bool           = true,
-    wavelengths                   = SolarRadiation.DEFAULT_WAVELENGTHS,
+    month :: Int;
+    gads_file :: AbstractString = joinpath(get(ENV, "RASTERDATASOURCES_PATH", homedir()), "gads", "gads.nc"),
+    interpolate :: Bool = true,
+    wavelengths = SolarRadiation.DEFAULT_WAVELENGTHS,
 )
     lon, lat = GeoInterface.x(point), GeoInterface.y(point)
     isfile(gads_file) || error(
@@ -61,17 +61,17 @@ function get_aerosol_optical_depth(
 
     # ── 1. Load the NetCDF into a DimArray ────────────────────────────────────
     da = NCDatasets.NCDataset(gads_file, "r") do ds
-        lons    = Float64.(ds["lon"][:])
-        lats    = Float64.(ds["lat"][:])
-        rh_raw  = Float64.(ds["relhum"][:])      # stored as 0, 50, 70, … 99
+        lons = Float64.(ds["lon"][:])
+        lats = Float64.(ds["lat"][:])
+        rh_raw = Float64.(ds["relhum"][:])      # stored as 0, 50, 70, … 99
         seasons = Float64.(ds["season"][:])      # 0 = summer, 1 = winter
-        wls     = Float64.(ds["wavelength"][:])  # nm
-        data    = Float64.(ds["OPTDEPTH"][:, :, :, :, :])  # (lon,lat,rh,season,wl)
+        wls = Float64.(ds["wavelength"][:])  # nm
+        data = Float64.(ds["OPTDEPTH"][:, :, :, :, :])  # (lon,lat,rh,season,wl)
 
         DimArray(data, (
             Dim{:lon}(lons),
             Dim{:lat}(lats),
-            Dim{:relative_humidity}(rh_raw ./ 100.0),  # convert to 0–1 fraction
+            Dim{:relative_humidity}(rh_raw ./ 100.0), # convert to 0–1 fraction
             Dim{:season}(seasons),
             Dim{:wavelength}(wls),
         ))
@@ -82,12 +82,12 @@ function get_aerosol_optical_depth(
     season_weight = 0.5 * (1.0 - cos(2π * (month - 1) / 12))
     summer = da[season = At(0.0)]   # (lon, lat, relative_humidity, wavelength)
     winter = da[season = At(1.0)]
-    da_sw  = season_weight .* summer .+ (1.0 - season_weight) .* winter
+    da_sw = season_weight .* summer .+ (1.0 - season_weight) .* winter
 
     # ── 3. Relative-humidity interpolation ────────────────────────────────────
     rh_clamped = clamp(Float64(relative_humidity), 0.0, 0.99)
-    rh_levels  = dims(da_sw, :relative_humidity).val
-    da_rh      = _interp_dim(da_sw, :relative_humidity, rh_clamped, rh_levels)
+    rh_levels = dims(da_sw, :relative_humidity).val
+    da_rh = _interp_dim(da_sw, :relative_humidity, rh_clamped, rh_levels)
     # da_rh is now (lon, lat, wavelength)
 
     # ── 4. Spatial selection / interpolation ──────────────────────────────────
@@ -103,8 +103,8 @@ function get_aerosol_optical_depth(
     end
     # da_spatial is now a 1-D DimArray indexed by wavelength
 
-    gads_wls  = Float64.(dims(da_spatial, :wavelength).val)   # 25 GADS wavelengths (nm)
-    gads_aod  = Float64.(parent(da_spatial))                   # 25 optical depth values
+    gads_wls = Float64.(dims(da_spatial, :wavelength).val)   # 25 GADS wavelengths (nm)
+    gads_aod = Float64.(parent(da_spatial))                   # 25 optical depth values
 
     # ── 5. Wavelength interpolation (GADS 25 pts → target grid) ──────────────
     target_wls_nm = ustrip.(u"nm", wavelengths)
@@ -143,10 +143,10 @@ function _bilinear_latlon(da, latitude::Float64, longitude::Float64,
 
     # Find bracketing indices
     i_lat = clamp(searchsortedlast(lat_levels, latitude), 1, length(lat_levels) - 1)
-    i_lon = clamp(searchsortedlast(lon_levels, lon),      1, length(lon_levels) - 1)
+    i_lon = clamp(searchsortedlast(lon_levels, lon), 1, length(lon_levels) - 1)
 
-    lat0, lat1 = lat_levels[i_lat],     lat_levels[i_lat + 1]
-    lon0, lon1 = lon_levels[i_lon],     lon_levels[i_lon + 1]
+    lat0, lat1 = lat_levels[i_lat], lat_levels[i_lat + 1]
+    lon0, lon1 = lon_levels[i_lon], lon_levels[i_lon + 1]
 
     t_lat = (latitude - lat0) / (lat1 - lat0)
     t_lon = (lon      - lon0) / (lon1 - lon0)
