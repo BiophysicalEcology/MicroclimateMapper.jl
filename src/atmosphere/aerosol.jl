@@ -54,7 +54,7 @@ function get_aerosol_optical_depth(
     interpolate :: Bool           = true,
     wavelengths                   = SolarRadiation.DEFAULT_WAVELENGTHS,
 )
-    lon, lat = _lonlat(point)
+    lon, lat = GeoInterface.x(point), GeoInterface.y(point)
     isfile(gads_file) || error(
         "GADS file not found: \"$gads_file\"\n" *
         "Set the `gads_file` keyword or place gads.nc at the default path.")
