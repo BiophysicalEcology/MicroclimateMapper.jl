@@ -317,6 +317,7 @@ function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
     init_inputs, soil_moisture_available, years, cloud_constants,
+    soil_profile,
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
@@ -360,7 +361,7 @@ function _build_inputs_and_pool(;
         # didn't supply a value. `initial_snow_density = nothing` is the
         # MicroInputs default ("use the snow model's snow_density") — pass
         # through unchanged.
-        MicroInputs(; site,
+        MicroInputs(; site, soil_profile,
             env.environment_minmax, env.environment_daily, env.environment_hourly,
             initial_soil_temperature = init_inputs.soil_temperature,
             initial_soil_moisture,

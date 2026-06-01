@@ -16,10 +16,11 @@
 #     run template at `init` time
 
 """
-    MicroRasterProblem(; model, area, years, template, init=nothing, data=(;))
+    MicroRasterProblem(; model, area, years, template, soil_profile, init=nothing, data=(;))
 
 Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
-extent, time range, initial conditions, and any per-run data overrides.
+extent, time range, soil column profile, initial conditions, and any
+per-run data overrides.
 
 - `model::MicroMapModel`
 - `area` — `Extents.Extent` (run every pixel of the template) or any
@@ -32,6 +33,9 @@ extent, time range, initial conditions, and any per-run data overrides.
       `area` and use it as the grid; weather is resampled onto it.
     * `Raster` — use the supplied raster's `X`/`Y` lookup as the grid;
       weather is resampled onto it. Only `X`/`Y` dims are read.
+- `soil_profile::SoilProfile` — per-depth `bulk_density` and
+  `mineral_density`. Currently uniform across pixels (a per-pixel
+  `soil_profile_source` is a planned extension).
 - `init` — initial conditions; default fills `soil_moisture` from
   `model.micro_model.depths` and lets `soil_temperature` fall back to the
   day-mean reference air temperature
@@ -42,14 +46,19 @@ extent, time range, initial conditions, and any per-run data overrides.
       `mean_temperature`, `cloud_cover`). Each as a `Raster` in canonical
       units; resampled to the run template automatically.
 """
-@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,Y,IT,D<:NamedTuple,T}
+@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,Y,T,SP<:SoilProfile,IT,D<:NamedTuple}
     model::M
     area::A
     years::Y
     template::T
+    soil_profile::SP
     init::IT = nothing
     data::D = (;)
 end
+
+# Positional-`model` convenience: `MicroRasterProblem(model; area, years, ...)`.
+MicroRasterProblem(model::MicroMapModel; kwargs...) =
+    MicroRasterProblem(; model, kwargs...)
 
 # ---------------------------------------------------------------------------
 # Grid-mode spatial extractors
@@ -177,7 +186,7 @@ overrides), pre-resolve every grid onto the run template, allocate the
 worker-cache pool, and prepare for `solve!`.
 """
 function CommonSolve.init(problem::MicroRasterProblem)
-    (; model, area, years, data) = problem
+    (; model, area, years, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
 
@@ -222,6 +231,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, cloud_constants,
+        soil_profile,
     )
 
     return MicroMapCache(

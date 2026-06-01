@@ -23,17 +23,20 @@ const GI = GeoInterface
 const _POINTS_LOAD_BUFFER = 2.0
 
 """
-    MicroVectorProblem(; model, points, years, init=nothing, data=(;))
+    MicroVectorProblem(; model, points, years, soil_profile, init=nothing, data=(;))
 
 Concrete points-mode microclimate run: pairs a `MicroMapModel` with a list
-of GeoInterface-conformant points, a time range, initial conditions, and
-any per-run data overrides.
+of GeoInterface-conformant points, a time range, soil column profile,
+initial conditions, and any per-run data overrides.
 
 - `model::MicroMapModel`
 - `points::AbstractVector` — any iterable of GeoInterface point-like objects
   (e.g. `Vector{Tuple{Float64,Float64}}` of `(longitude, latitude)`).
   The bounding extent is derived via `GeoInterface.extent(MultiPoint(points))`.
 - `years::AbstractRange`
+- `soil_profile::SoilProfile` — per-depth `bulk_density` and
+  `mineral_density`. Currently uniform across points (a per-point
+  `soil_profile_source` is a planned extension).
 - `init`, `data` — same semantics as `MicroRasterProblem`. Override Rasters
   (`data.surface_albedo`, `data.roughness_height`, any canonical weather
   variable) are per-point `Near`-extracted at `init` time rather than
@@ -44,13 +47,18 @@ where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
 callers can recover coordinates via `lookup`/`val` or by indexing with
 `X(At(x)), Y(At(y))` selectors.
 """
-@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,Y,IT,D<:NamedTuple}
+@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,Y,SP<:SoilProfile,IT,D<:NamedTuple}
     model::M
     points::PT
     years::Y
+    soil_profile::SP
     init::IT = nothing
     data::D = (;)
 end
+
+# Positional-`model` convenience: `MicroVectorProblem(model; points, years, ...)`.
+MicroVectorProblem(model::MicroMapModel; kwargs...) =
+    MicroVectorProblem(; model, kwargs...)
 
 # ---------------------------------------------------------------------------
 # Points dim + per-point extractors
@@ -153,7 +161,7 @@ extract every forcing into `Dim{:point}`-keyed Rasters, allocate the
 worker-cache pool, and prepare for `solve!`. No resampling is performed.
 """
 function CommonSolve.init(problem::MicroVectorProblem)
-    (; model, points, years, data) = problem
+    (; model, points, years, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
 
@@ -196,6 +204,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, cloud_constants,
+        soil_profile,
     )
 
     return MicroMapCache(

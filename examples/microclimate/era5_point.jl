@@ -9,7 +9,7 @@
 #   using Pkg; Pkg.add(["Plots", "CSV", "DataFrames"])
 
 using MicroclimateMapper
-using Microclimate: example_microclimate_problem
+using Microclimate: example_microclimate_problem, example_soil_profile
 using Rasters
 using Unitful
 using Dates
@@ -38,7 +38,9 @@ model = MicroMapModel(;
 # Rasters Zarr backend for the ARCO-ERA5 store. Once the JSON version
 # conflict between RasterDataSources/dev and ZarrDatasets is resolved this
 # can become a direct dependency.
-problem = MicroVectorProblem(; model, points = [point], years)
+problem = MicroVectorProblem(; model, points = [point], years,
+    soil_profile = example_soil_profile(inner.depths),
+)
 output = solve(problem)
 
 @show size(output.soil_temperature)

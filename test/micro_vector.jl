@@ -3,7 +3,7 @@ using MicroclimateMapper
 using MicroclimateMapper: _make_points_dim, _points_extent,
     _to_points, _to_points_constant, _to_points_with_time,
     _stack_to_points
-using Microclimate: example_microclimate_problem
+using Microclimate: example_microclimate_problem, example_soil_profile
 using Rasters
 using Rasters: X, Y, Ti, Near
 using Rasters.DimensionalData: Dim, MergedLookup, hasdim
@@ -99,16 +99,18 @@ end
         weather_source = TerraClimate{Historical},
     )
     years = 2000:2000
+    soil_profile = example_soil_profile(inner.depths)
 
-    problem = MicroVectorProblem(; model, points = POINTS, years)
+    problem = MicroVectorProblem(; model, points = POINTS, years, soil_profile)
     @test problem.model === model
     @test problem.points === POINTS
     @test problem.years === years
+    @test problem.soil_profile === soil_profile
     @test problem.init === nothing
     @test problem.data === (;)
 
     problem2 = MicroVectorProblem(;
-        model, points = POINTS, years,
+        model, points = POINTS, years, soil_profile,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
     )
