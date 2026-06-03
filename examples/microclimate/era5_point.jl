@@ -16,7 +16,7 @@ using Dates
 using GeoInterface: Wrappers as GIW
 
 point = GIW.Point((-89.4557, 43.1379))
-years = 2000:2000
+dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
 
 # ---------------------------------------------------------------------------
 # Build the model
@@ -38,7 +38,7 @@ model = MicroMapModel(;
 # Rasters Zarr backend for the ARCO-ERA5 store. Once the JSON version
 # conflict between RasterDataSources/dev and ZarrDatasets is resolved this
 # can become a direct dependency.
-problem = MicroVectorProblem(; model, points = [point], years,
+problem = MicroVectorProblem(; model, points = [point], dates,
     soil_profile = example_soil_profile(inner.depths),
 )
 output = solve(problem)

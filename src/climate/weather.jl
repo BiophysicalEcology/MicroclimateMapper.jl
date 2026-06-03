@@ -118,6 +118,97 @@ The time step a source's `_load_weather` produces. Default
 @inline _days_of_year(::DailyResolution, nyears) = repeat(1:365, nyears)
 @inline _days_of_year(::HourlyResolution, nyears) = repeat(1:365, nyears)
 
+# ---------------------------------------------------------------------------
+# Date-range helpers
+# ---------------------------------------------------------------------------
+
+# Convert an old-style integer years range to a full-calendar Date range.
+_years_to_dates(years::AbstractRange{Int}) =
+    Date(first(years), 1, 1):Day(1):Date(last(years), 12, 31)
+
+# Derive the integer year span that must be loaded from weather sources to
+# cover all dates.
+_years_from_dates(d::Date)                 = year(d):year(d)
+_years_from_dates(r::AbstractRange{Date})  = minimum(year, r):maximum(year, r)
+
+# Day-of-year on the 365-day calendar (Feb 29 is dropped, so March 1 = doy 60
+# whether or not the year is a leap year).
+function _doy_noleap(d::Date)
+    doy = dayofyear(d)
+    isleapyear(year(d)) && d >= Date(year(d), 3, 1) && (doy -= 1)
+    return doy
+end
+
+_is_leapday(d::Date) = isleapyear(year(d)) && month(d) == 2 && day(d) == 29
+
+# Normalise user-supplied dates to a sorted Vector{Date}, dropping Feb 29
+# (consistent with the 365-day-per-year convention throughout).
+_normalise_dates(d::Date) = _is_leapday(d) ? Date[] : [d]
+function _normalise_dates(r::AbstractRange{Date})
+    v = filter(!_is_leapday, collect(r))
+    isempty(v) && error(
+        "No valid simulation dates remain after dropping Feb 29 " *
+        "(leap days are not yet supported).")
+    return v
+end
+
+# Compute the 1-based positional Ti range into the full-years weather stack,
+# and the day-of-year vector for the solver (one entry per unique day, or per
+# month for monthly sources). `dates_vec` must already be normalised (sorted,
+# no Feb 29).
+function _ti_range_for_dates(::MonthlyResolution, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 12 + month(start_d)
+    ti_end   = (yi_end   - 1) * 12 + month(end_d)
+    days_doy = Int[]
+    d = Date(year(start_d), month(start_d), 1)
+    stop = Date(year(end_d), month(end_d), 1)
+    while d <= stop
+        push!(days_doy, Microclimate.DEFAULT_DAYS[month(d)])
+        d += Month(1)
+    end
+    return ti_start, ti_end, days_doy
+end
+
+function _ti_range_for_dates(::DailyResolution, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 365 + _doy_noleap(start_d)
+    ti_end   = (yi_end   - 1) * 365 + _doy_noleap(end_d)
+    return ti_start, ti_end, _doy_noleap.(dates_vec)
+end
+
+function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 8760 + (_doy_noleap(start_d) - 1) * 24 + 1
+    ti_end   = (yi_end   - 1) * 8760 + _doy_noleap(end_d) * 24
+    return ti_start, ti_end, _doy_noleap.(dates_vec)
+end
+
+# One "anchor" Date per solver step — used to carry the year when building
+# the output DateTime axis. Monthly: 1st of each selected month. Daily/hourly:
+# the dates_vec itself (already one per calendar day).
+function _step_anchor_dates(::MonthlyResolution, dates_vec::Vector{Date})
+    seen = Set{Tuple{Int,Int}}()
+    result = Date[]
+    for d in sort(dates_vec)
+        k = (year(d), month(d))
+        k in seen && continue
+        push!(seen, k)
+        push!(result, Date(year(d), month(d), 1))
+    end
+    return result
+end
+_step_anchor_dates(::TemporalResolution, dates_vec::Vector{Date}) = dates_vec
+
 # Monthly forcing → independent representative days (Fortran "monthly mode");
 # daily/hourly forcing → continuous run with state carrying day-to-day.
 @inline _time_mode(::MonthlyResolution) = Microclimate.NonConsecutiveDayMode()
@@ -492,14 +583,14 @@ and the env-minmax struct type is `MonthlyMinMaxEnvironment` or
 else — `DailyTimeseries`, `HourlyTimeseries`, the intermediate buffers —
 just scales with the total timestep count.
 """
-function allocate_weather_buffers(source::Type{<:RasterDataSources.RasterDataSource}, nyears::Int)
-    _allocate_weather_buffers(temporal_resolution(source), source, nyears)
+function allocate_weather_buffers(source::Type{<:RasterDataSources.RasterDataSource},
+                                  days_of_year::AbstractVector{Int})
+    _allocate_weather_buffers(temporal_resolution(source), source, days_of_year)
 end
 
 function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyResolution},
-                                   source, nyears::Int)
-    nsteps = nyears * steps_per_year(resolution)
-    days_of_year = _days_of_year(resolution, nyears)
+                                   ::Any, days_of_year::AbstractVector{Int})
+    nsteps = length(days_of_year)
     zeros_float(n) = zeros(Float64, n)
 
     # Canonical buffers — each carries the unit appropriate for its quantity.
@@ -577,9 +668,9 @@ end
 # Hourly mode: env_minmax = nothing, env_hourly arrays ARE the canonical
 # buffers (shared storage), env_daily arrays sit at 1/24 the resolution
 # and are filled by aggregating the hourly canonical buffers.
-function _allocate_weather_buffers(::HourlyResolution, source, nyears::Int)
-    nhours = nyears * 8760  # 24 × 365 (Feb 29 dropped)
-    ndays = nyears * 365
+function _allocate_weather_buffers(::HourlyResolution, ::Any, days_of_year::AbstractVector{Int})
+    ndays  = length(days_of_year)    # one per unique day (Feb 29 dropped)
+    nhours = ndays * 24
     zeros_float(n) = zeros(Float64, n)
 
     # Hourly canonical buffers — shared with `environment_hourly`.
@@ -599,11 +690,9 @@ function _allocate_weather_buffers(::HourlyResolution, source, nyears::Int)
     dewpoint_temperature = zeros(typeof(0.0u"K"), nhours)
     actual_vapour_pressure = zeros(typeof(0.0u"kPa"), nhours)
 
-    # `environment_daily` lives at 365/year — aggregated from hourly.
+    # `environment_daily` lives at one entry per unique day — aggregated from hourly.
     rainfall_daily = zeros(typeof(0.0u"kg/m^2"), ndays)
     deep_soil_temperature = zeros(typeof(0.0u"K"), ndays)
-
-    days_of_year = repeat(1:365, nyears)
 
     environment_daily = DailyTimeseries(;
         shade = zeros_float(ndays),
@@ -977,7 +1066,15 @@ end
 # Annual mean of hourly reference_temperature, broadcast across all 365
 # daily entries of `deep_soil_temperature`.
 function derive!(::Val{:deep_soil_temperature_from_hourly}, buffers, ctx)
-    nyears = length(buffers.deep_soil_temperature) ÷ 365
+    ndays  = length(buffers.deep_soil_temperature)
+    nhours = length(buffers.reference_temperature)
+    if ndays < 365
+        # Sub-annual run: fill with mean of all available hours.
+        run_mean = sum(buffers.reference_temperature) / nhours
+        fill!(buffers.deep_soil_temperature, run_mean)
+        return nothing
+    end
+    nyears = ndays ÷ 365
     @inbounds for y in 1:nyears
         h0 = (y - 1) * 8760
         annual_sum = zero(eltype(buffers.reference_temperature))
@@ -1045,6 +1142,12 @@ function _annual_means!(out::AbstractVector,
                         values::AbstractVector,
                         nyears::Int,
                         steps_per_year::Int)
+    if nyears == 0
+        # Sub-annual run: fill with mean of all available steps.
+        run_mean = sum(values) / length(values)
+        fill!(out, run_mean)
+        return out
+    end
     @inbounds for y in 1:nyears
         annual_sum = zero(eltype(values))
         for k in 1:steps_per_year

@@ -316,22 +316,22 @@ end
 function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
-    init_inputs, soil_moisture_available, years, cloud_constants,
+    init_inputs, soil_moisture_available, days, cloud_constants,
     soil_profile,
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
     resolution = temporal_resolution(weather_source)
-    ndays = steps_per_year(resolution) * length(years)
-    days = _days_of_year(resolution, length(years))
     time_mode = _time_mode(resolution)
-    nsteps = length(cloud_constants.hours) * ndays
     nmax = cloud_constants.solar_model.wavelength_count
+    # `days` is the doy vector: one per unique day (daily/hourly) or one per
+    # selected month (monthly). Solar radiation is computed for each entry × 24 hours.
+    nsteps = length(cloud_constants.hours) * length(days)
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, length(years)),
+        weather = allocate_weather_buffers(weather_source, days),
         solar = (;
-            out = allocate_output_arrays(nsteps, ndays, nmax),
+            out = allocate_output_arrays(nsteps, length(days), nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),
         ),
         cloud_constants,
@@ -411,8 +411,9 @@ function CommonSolve.solve!(cache::MicroMapCache)
     proto, first_I, first_result = _solve_proto_pixel!(cache)
     try
         layers = cache.problem.model.output_layers
-        output = _allocate_output(cache.problem.model.micro_model, proto.micro.problem.days,
-            cache.terrain, first_result, layers, first(cache.problem.years), cache.mask)
+        output = _allocate_output(cache.problem.model.micro_model,
+            cache.terrain, first_result, layers,
+            cache.init_inputs.anchor_dates, cache.mask)
         _write_output!(output, first_result, layers, first_I)
         return _solve_remaining!(output, cache, proto, first_I)
     catch
@@ -484,9 +485,10 @@ end
 # Output stack allocation and per-pixel writes
 # ---------------------------------------------------------------------------
 
-function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple, year::Integer, mask)
+function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple,
+                          anchor_dates::AbstractVector{Date}, mask)
     spatial_dims = dims(terrain.elevation)
-    ti = Ti(_ti_datetime_axis(year, days, model.hours))
+    ti = Ti(_ti_datetime_axis(anchor_dates, model.hours))
     # Dim lookups must be plain numbers, not Unitful — Unitful in dims
     # breaks NetCDF I/O and surprises selectors. Strip both to metres so
     # `depth` and `height` share a single linear axis.
@@ -500,17 +502,16 @@ function _allocate_output(model::MicroModel, days, terrain, proto, layers::Tuple
     end))
 end
 
-# Build the Ti axis as actual DateTimes. `days` are day-of-year integers
-# (mid-month for monthly mode; 1:365 for daily); `hours` are 0..23
-# floats; the result is one DateTime per (day, hour) row of the inner
-# Microclimate output.
-function _ti_datetime_axis(year::Integer, days::AbstractVector{<:Integer},
-                           hours::AbstractVector)
-    out = Vector{DateTime}(undef, length(days) * length(hours))
-    base = DateTime(year, 1, 1)
+# Build the Ti axis as actual DateTimes. `anchor_dates` has one entry per
+# solver step (one per unique day for daily/hourly; one per selected month
+# for monthly). `hours` are 0..23 floats. The result is one DateTime per
+# (step, hour) pair. Using actual calendar dates (not doy arithmetic) keeps
+# cross-year and leap-year boundaries correct.
+function _ti_datetime_axis(anchor_dates::AbstractVector{Date}, hours::AbstractVector)
+    out = Vector{DateTime}(undef, length(anchor_dates) * length(hours))
     k = 1
-    for d in days, h in hours
-        out[k] = base + Day(d - 1) + Hour(round(Int, h))
+    for d in anchor_dates, h in hours
+        out[k] = DateTime(d) + Hour(round(Int, h))
         k += 1
     end
     return out

@@ -1,4 +1,5 @@
 using Test
+using Dates
 using MicroclimateMapper
 using MicroclimateMapper: _make_points_dim, _points_extent,
     _to_points, _to_points_constant, _to_points_with_time,
@@ -98,19 +99,24 @@ end
         dem_source = SRTM,
         weather_source = TerraClimate{Historical},
     )
-    years = 2000:2000
+    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
     soil_profile = example_soil_profile(inner.depths)
 
-    problem = MicroVectorProblem(; model, points = POINTS, years, soil_profile)
+    problem = MicroVectorProblem(; model, points = POINTS, dates, soil_profile)
     @test problem.model === model
     @test problem.points === POINTS
-    @test problem.years === years
+    @test problem.dates === dates
     @test problem.soil_profile === soil_profile
     @test problem.init === nothing
     @test problem.data === (;)
 
+    # Single-day run
+    problem_day = MicroVectorProblem(;
+        model, points = POINTS, dates = Date(2000, 6, 29), soil_profile)
+    @test problem_day.dates === Date(2000, 6, 29)
+
     problem2 = MicroVectorProblem(;
-        model, points = POINTS, years, soil_profile,
+        model, points = POINTS, dates, soil_profile,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
     )
