@@ -18,6 +18,24 @@
 temporal_resolution(::Type{<:NCEP}) = DailyResolution()
 weather_loader(::Type{<:NCEP{SurfaceGauss}}) = YearlyTimeSeries()
 
+# NCEP{SurfaceGauss} stores `dswrf` at sub-daily resolution (3- or 6-hourly,
+# depending on the archive version), while all other variables are daily.
+# Aggregate any layer whose Ti length exceeds the expected 365 × nyears to
+# daily means before the canonical pipeline sees the data.
+function _post_load_stack!(::Type{<:NCEP{SurfaceGauss}}, stack, nyears)
+    expected = 365 * nyears
+    names = keys(stack)
+    layers = map(names) do name
+        layer = getproperty(stack, name)
+        n = size(layer, Ti)
+        n == expected && return layer
+        n % expected == 0 || error(
+            "NCEP layer $name: Ti length $n is not a multiple of expected $expected")
+        return _aggregate_ti_to_daily(layer, n ÷ expected)
+    end
+    return RasterStack(NamedTuple{names}(layers))
+end
+
 # NCEP getraster requires a `dataset` kwarg ("reanalysis" or "reanalysis2");
 # we use the Reanalysis 1 archive throughout.
 _extra_getraster_kwargs(::Type{<:NCEP}) = (; dataset = "reanalysis")

@@ -323,15 +323,19 @@ function _build_inputs_and_pool(;
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
     resolution = temporal_resolution(weather_source)
-    ndays = steps_per_year(resolution) * length(years)
+    # `solar_ndays` is the number of distinct solar-geometry days per year —
+    # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
+    # scratch.solar.out sizing. Using steps_per_year here would over-allocate
+    # for HourlyResolution (8760 × 24 entries instead of 365 × 24).
+    solar_ndays = _solar_ndays_per_year(resolution) * length(years)
     days = _days_of_year(resolution, length(years))
     time_mode = _time_mode(resolution)
-    nsteps = length(cloud_constants.hours) * ndays
+    nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
     allocate_scratch() = (;
         weather = allocate_weather_buffers(weather_source, length(years)),
         solar = (;
-            out = allocate_output_arrays(nsteps, ndays, nmax),
+            out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),
         ),
         cloud_constants,
