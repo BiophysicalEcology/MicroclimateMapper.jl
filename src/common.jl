@@ -316,7 +316,7 @@ end
 function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
-    init_inputs, soil_moisture_available, days, cloud_constants,
+    init_inputs, soil_moisture_available, years, days, cloud_constants,
     soil_profile,
 )
     (; micro_model, lapse_rate_model) = model
@@ -328,7 +328,6 @@ function _build_inputs_and_pool(;
     # scratch.solar.out sizing. Using steps_per_year here would over-allocate
     # for HourlyResolution (8760 × 24 entries instead of 365 × 24).
     solar_ndays = _solar_ndays_per_year(resolution) * length(years)
-    days = _days_of_year(resolution, length(years))
     time_mode = _time_mode(resolution)
     nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count

@@ -246,7 +246,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
-        init_inputs, soil_moisture_available, days = days_doy, cloud_constants,
+        init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
         soil_profile,
     )
 
