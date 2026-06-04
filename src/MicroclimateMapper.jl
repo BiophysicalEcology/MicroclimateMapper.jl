@@ -57,7 +57,8 @@ export
     init,
     reinit!,
     canonical_unit,
-    strip_to_canonical
+    strip_to_canonical,
+    SolarRasterProblem
 
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
@@ -79,5 +80,6 @@ include("climate/gridmet.jl")
 include("common.jl")
 include("raster.jl")
 include("vector.jl")
+include("solar/solar_raster.jl")
 
 end
