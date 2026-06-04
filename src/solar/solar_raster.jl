@@ -64,7 +64,7 @@ function CommonSolve.solve(prob::SolarRasterProblem)
     ny     = size(terrain.elevation, Y)
 
     # 3. Pre-extract raw parent arrays — avoids DimensionalData indexing overhead
-    # in the hot pixel loop (pure array access, no lookup or bounds-check dispatch).
+    # in the hot pixel loop (pure array access, no lookup dispatch).
     elev_p  = parent(terrain.elevation)
     slope_p = parent(terrain.slope)
     asp_p   = parent(terrain.aspect)
@@ -73,14 +73,23 @@ function CommonSolve.solve(prob::SolarRasterProblem)
     lat_p   = parent(terrain.latitude)
     lon_p   = parent(terrain.longitude)
 
-    # 4. Per-thread scratch — solar_radiation! mutates `out` and `buffers`
+    # 4. Per-worker scratch pool — solar_radiation! mutates `out` and `buffers`
     # in place, so each concurrent worker needs its own copy.
+    # Channel-based pool (same pattern as the microclimate solve) avoids any
+    # dependence on threadid(), which can exceed nthreads() when Julia is started
+    # with an interactive thread pool (e.g. --threads=16,1).
     build_scratch() = (;
         out     = allocate_output_arrays(nsteps, ndays, nmax),
         buffers = allocate_buffers(nmax, prob.solar_model.diffuse_model),
     )
-    nt          = Threads.nthreads()
-    scratch_vec = [build_scratch() for _ in 1:nt]
+    npixels  = nx * ny
+    nworkers = min(Threads.nthreads(), npixels)
+    proto    = build_scratch()
+    scratch_pool = Channel{typeof(proto)}(nworkers)
+    put!(scratch_pool, proto)
+    for _ in 2:nworkers
+        put!(scratch_pool, build_scratch())
+    end
 
     # 5. Plain Float64 output — avoids Unitful broadcasting overhead during the
     # hot loop. Units are re-attached once on the final Raster construction.
@@ -89,32 +98,46 @@ function CommonSolve.solve(prob::SolarRasterProblem)
     data_dfh = zeros(Float64, nx, ny, nsteps)
     data_gh  = zeros(Float64, nx, ny, nsteps)
 
-    # 6. Parallel pixel loop — :static schedule makes threadid() stable so each
-    # worker reliably holds its own scratch buffer. Each (ix, iy) pair is unique
-    # across threads, so writes to data_* are race-free without locking.
-    albedo = prob.albedo
+    # 6. Work queue — ix column indices, workers drain concurrently.
+    # Each worker then loops over all iy rows for its ix, keeping the inner
+    # iy loop tight on a single scratch buffer.
+    work = Channel{Int}(nx)
+    for ix in 1:nx
+        put!(work, ix)
+    end
+    close(work)
+
+    albedo      = prob.albedo
     solar_model = prob.solar_model
-    Threads.@threads :static for ix in 1:nx
-        sc = scratch_vec[Threads.threadid()]
-        for iy in 1:ny
-            st = SolarTerrain(;
-                elevation            = elev_p[ix, iy],
-                slope                = slope_p[ix, iy],
-                aspect               = asp_p[ix, iy],
-                horizon_angles       = hz_p[ix, iy],
-                albedo,
-                atmospheric_pressure = press_p[ix, iy],
-                latitude             = lat_p[ix, iy],
-                longitude            = lon_p[ix, iy],
-            )
-            solar_radiation!(sc.out, sc.buffers, solar_model;
-                             solar_terrain = st, days, hours)
-            # Scalar ustrip per timestep — no temporary array allocation.
-            @inbounds for t in 1:nsteps
-                data_gt[ix, iy, t]  = ustrip(u"W/m^2", sc.out.global_terrain[t])
-                data_dh[ix, iy, t]  = ustrip(u"W/m^2", sc.out.direct_horizontal[t])
-                data_dfh[ix, iy, t] = ustrip(u"W/m^2", sc.out.diffuse_horizontal[t])
-                data_gh[ix, iy, t]  = ustrip(u"W/m^2", sc.out.global_horizontal[t])
+    @sync for _ in 1:nworkers
+        Threads.@spawn begin
+            sc = take!(scratch_pool)
+            try
+                for ix in work
+                    for iy in 1:ny
+                        st = SolarTerrain(;
+                            elevation            = elev_p[ix, iy],
+                            slope                = slope_p[ix, iy],
+                            aspect               = asp_p[ix, iy],
+                            horizon_angles       = hz_p[ix, iy],
+                            albedo,
+                            atmospheric_pressure = press_p[ix, iy],
+                            latitude             = lat_p[ix, iy],
+                            longitude            = lon_p[ix, iy],
+                        )
+                        solar_radiation!(sc.out, sc.buffers, solar_model;
+                                         solar_terrain = st, days, hours)
+                        # Scalar ustrip per timestep — no temporary allocation.
+                        @inbounds for t in 1:nsteps
+                            data_gt[ix, iy, t]  = ustrip(u"W/m^2", sc.out.global_terrain[t])
+                            data_dh[ix, iy, t]  = ustrip(u"W/m^2", sc.out.direct_horizontal[t])
+                            data_dfh[ix, iy, t] = ustrip(u"W/m^2", sc.out.diffuse_horizontal[t])
+                            data_gh[ix, iy, t]  = ustrip(u"W/m^2", sc.out.global_horizontal[t])
+                        end
+                    end
+                end
+            finally
+                put!(scratch_pool, sc)
             end
         end
     end
