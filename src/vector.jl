@@ -23,17 +23,21 @@ const GI = GeoInterface
 const _POINTS_LOAD_BUFFER = 2.0
 
 """
-    MicroVectorProblem(; model, points, years, soil_profile, init=nothing, data=(;))
+    MicroVectorProblem(; model, points, dates, soil_profile, init=nothing, data=(;))
 
 Concrete points-mode microclimate run: pairs a `MicroMapModel` with a list
-of GeoInterface-conformant points, a time range, soil column profile,
+of GeoInterface-conformant points, a date range, soil column profile,
 initial conditions, and any per-run data overrides.
 
 - `model::MicroMapModel`
 - `points::AbstractVector` — any iterable of GeoInterface point-like objects
   (e.g. `Vector{Tuple{Float64,Float64}}` of `(longitude, latitude)`).
   The bounding extent is derived via `GeoInterface.extent(MultiPoint(points))`.
-- `years::AbstractRange`
+- `dates` — any contiguous date range:
+    * `Date(2000, 6, 29)` — single day
+    * `Date(2000, 6, 1):Day(1):Date(2000, 6, 30)` — one month
+    * `Date(2000, 1, 1):Day(1):Date(2000, 12, 31)` — full year
+  Feb 29 is dropped (365-day calendar). Cross-year ranges are supported.
 - `soil_profile::SoilProfile` — per-depth `bulk_density` and
   `mineral_density`. Currently uniform across points (a per-point
   `soil_profile_source` is a planned extension).
@@ -47,16 +51,16 @@ where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
 callers can recover coordinates via `lookup`/`val` or by indexing with
 `X(At(x)), Y(At(y))` selectors.
 """
-@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,Y,SP<:SoilProfile,IT,D<:NamedTuple}
+@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,DT<:Union{Date,AbstractRange{Date}},SP<:SoilProfile,IT,D<:NamedTuple}
     model::M
     points::PT
-    years::Y
+    dates::DT
     soil_profile::SP
     init::IT = nothing
     data::D = (;)
 end
 
-# Positional-`model` convenience: `MicroVectorProblem(model; points, years, ...)`.
+# Positional-`model` convenience: `MicroVectorProblem(model; points, dates, ...)`.
 MicroVectorProblem(model::MicroMapModel; kwargs...) =
     MicroVectorProblem(; model, kwargs...)
 
@@ -161,12 +165,18 @@ extract every forcing into `Dim{:point}`-keyed Rasters, allocate the
 worker-cache pool, and prepare for `solve!`. No resampling is performed.
 """
 function CommonSolve.init(problem::MicroVectorProblem)
-    (; model, points, years, soil_profile, data) = problem
+    (; model, points, dates, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+
+    dates_vec = _normalise_dates(dates)
+    years = _years_from_dates(dates)
+    resolution = temporal_resolution(weather_source)
+    ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
+    anchor_dates = _step_anchor_dates(resolution, dates_vec)
 
     area = _points_extent(points)
     points_dim = _make_points_dim(points)
@@ -183,6 +193,9 @@ function CommonSolve.init(problem::MicroVectorProblem)
     weather_area = Extents.buffer(area,
         (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
     weather_native = _resolve_weather(data, weather_source, weather_area, years)
+    # Slice to the requested date range before per-point extraction —
+    # positional Ti indexing works for both integer and DateTime Ti axes.
+    weather_native = weather_native[Ti(ti_start:ti_end)]
     dem_native = _resolve_dem(data, dem_source, area)
     terrain_native = compute_terrain_grids(dem_native;
         template = nothing, n_horizon_angles = N_HORIZON_ANGLES)
@@ -203,14 +216,14 @@ function CommonSolve.init(problem::MicroVectorProblem)
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
-        init_inputs, soil_moisture_available, years, cloud_constants,
+        init_inputs, soil_moisture_available, days = days_doy, cloud_constants,
         soil_profile,
     )
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, nothing, cache_pool,
-        (; init_inputs, build_inputs),
+        (; init_inputs, build_inputs, anchor_dates),
         cloud_constants,
     )
 end
@@ -229,7 +242,7 @@ CommonSolve.solve(problem::MicroVectorProblem) = solve!(init(problem))
 function Base.show(io::IO, ::MIME"text/plain", problem::MicroVectorProblem)
     println(io, "MicroVectorProblem")
     println(io, "  points: ", length(problem.points), " point(s)")
-    println(io, "  years:  ", problem.years)
+    println(io, "  dates:  ", problem.dates)
     println(io)
     println(io, "forcings:")
     _print_forcing_table(io, _forcing_origins(problem))

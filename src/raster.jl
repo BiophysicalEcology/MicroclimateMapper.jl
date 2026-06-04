@@ -16,10 +16,10 @@
 #     run template at `init` time
 
 """
-    MicroRasterProblem(; model, area, years, template, soil_profile, init=nothing, data=(;))
+    MicroRasterProblem(; model, area, dates, template, soil_profile, init=nothing, data=(;))
 
 Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
-extent, time range, soil column profile, initial conditions, and any
+extent, date range, soil column profile, initial conditions, and any
 per-run data overrides.
 
 - `model::MicroMapModel`
@@ -27,7 +27,11 @@ per-run data overrides.
   GeoInterface-conformant geometry (rasterised into a Bool mask via
   `Rasters.boolmask`; pixels outside the geometry are skipped and left
   as `missing` in the output)
-- `years::AbstractRange`
+- `dates` — any contiguous date range:
+    * `Date(2000, 6, 29)` — single day
+    * `Date(2000, 6, 1):Day(1):Date(2000, 6, 30)` — one month
+    * `Date(2000, 1, 1):Day(1):Date(2000, 12, 31)` — full year
+  Feb 29 is dropped (365-day calendar). Cross-year ranges are supported.
 - `template` — spatial grid the run executes on. Required; no fallback.
     * `Type{<:RasterDataSource}` (e.g. `SRTM`) — load that dataset over
       `area` and use it as the grid; weather is resampled onto it.
@@ -46,17 +50,17 @@ per-run data overrides.
       `mean_temperature`, `cloud_cover`). Each as a `Raster` in canonical
       units; resampled to the run template automatically.
 """
-@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,Y,T,SP<:SoilProfile,IT,D<:NamedTuple}
+@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,DT<:Union{Date,AbstractRange{Date}},T,SP<:SoilProfile,IT,D<:NamedTuple}
     model::M
     area::A
-    years::Y
+    dates::DT
     template::T
     soil_profile::SP
     init::IT = nothing
     data::D = (;)
 end
 
-# Positional-`model` convenience: `MicroRasterProblem(model; area, years, ...)`.
+# Positional-`model` convenience: `MicroRasterProblem(model; area, dates, ...)`.
 MicroRasterProblem(model::MicroMapModel; kwargs...) =
     MicroRasterProblem(; model, kwargs...)
 
@@ -186,12 +190,19 @@ overrides), pre-resolve every grid onto the run template, allocate the
 worker-cache pool, and prepare for `solve!`.
 """
 function CommonSolve.init(problem::MicroRasterProblem)
-    (; model, area, years, soil_profile, data) = problem
+    (; model, area, dates, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source) = model
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+
+    # Normalise the user-supplied dates: drop Feb 29, get a sorted Vector{Date}.
+    dates_vec = _normalise_dates(dates)
+    years = _years_from_dates(dates)
+    resolution = temporal_resolution(weather_source)
+    ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
+    anchor_dates = _step_anchor_dates(resolution, dates_vec)
 
     # Resolve the spatial template (Raster or RDS source loaded over
     # `area`), then resample the native-resolution weather onto it so
@@ -207,10 +218,15 @@ function CommonSolve.init(problem::MicroRasterProblem)
     extent = _to_extent(area)
     buffer_deg = weather_area_buffer(weather_source)
     weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
-    weather = _resolve_weather(data, weather_source, weather_area, years)
+    weather_full = _resolve_weather(data, weather_source, weather_area, years)
     dem_native = _resolve_dem(data, dem_source, extent)
     template_2d = _resolve_template(problem.template, extent)
-    weather = _resample_weather_to_template(weather, template_2d)
+    weather_full = _resample_weather_to_template(weather_full, template_2d)
+    # Slice the loaded (full-year) weather stack to the requested date range.
+    # Positional integer Ti indexing works for both integer Ti (most sources)
+    # and DateTime Ti (ERA5 Zarr). `stack[Ti(...)]` applies the slice to all
+    # layers simultaneously — unlike `map(f, stack)` which is pixel-wise.
+    weather = weather_full[Ti(ti_start:ti_end)]
     template = first(values(weather))
     terrain = compute_terrain_grids(dem_native;
         template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
@@ -230,14 +246,14 @@ function CommonSolve.init(problem::MicroRasterProblem)
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
-        init_inputs, soil_moisture_available, years, cloud_constants,
+        init_inputs, soil_moisture_available, days = days_doy, cloud_constants,
         soil_profile,
     )
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, mask, cache_pool,
-        (; init_inputs, build_inputs),
+        (; init_inputs, build_inputs, anchor_dates),
         cloud_constants,
     )
 end
@@ -256,7 +272,7 @@ CommonSolve.solve(problem::MicroRasterProblem) = solve!(init(problem))
 function Base.show(io::IO, ::MIME"text/plain", problem::MicroRasterProblem)
     println(io, "MicroRasterProblem")
     println(io, "  area:     ", problem.area)
-    println(io, "  years:    ", problem.years)
+    println(io, "  dates:    ", problem.dates)
     println(io, "  template: ", _template_label(problem.template))
     println(io)
     println(io, "forcings:")

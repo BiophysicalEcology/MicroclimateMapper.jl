@@ -1,4 +1,5 @@
 using Test
+using Dates
 using MicroclimateMapper
 using MicroclimateMapper: _canonical_data, _is_special_key, _resolve_init, _DEFAULT_INIT,
     _to_extent, _build_area_mask, _first_active_index, _is_active
@@ -76,21 +77,26 @@ end
         weather_source = TerraClimate{Historical},
     )
     area = Extent(X = (146.0, 146.1), Y = (-36.0, -35.9))
-    years = 2000:2000
+    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
     soil_profile = example_soil_profile(inner.depths)
 
-    problem = MicroRasterProblem(; model, area, years, template = SRTM, soil_profile)
+    problem = MicroRasterProblem(; model, area, dates, template = SRTM, soil_profile)
     @test problem.model === model
     @test problem.area === area
-    @test problem.years === years
+    @test problem.dates === dates
     @test problem.template === SRTM
     @test problem.soil_profile === soil_profile
     @test problem.init === nothing
     @test problem.data === (;)
 
+    # Single-day run
+    problem_day = MicroRasterProblem(;
+        model, area, dates = Date(2000, 6, 29), template = SRTM, soil_profile)
+    @test problem_day.dates === Date(2000, 6, 29)
+
     # Custom init + data overrides
     problem2 = MicroRasterProblem(;
-        model, area, years, template = SRTM, soil_profile,
+        model, area, dates, template = SRTM, soil_profile,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
     )
