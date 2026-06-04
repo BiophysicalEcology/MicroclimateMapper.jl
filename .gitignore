@@ -1,5 +1,6 @@
 Manifest.toml
-Project.toml
+/docs/build
+/docs/node_modules
 .claude/settings.json
 chamonix_horizons.png
 chamonix_solar_daily.png
