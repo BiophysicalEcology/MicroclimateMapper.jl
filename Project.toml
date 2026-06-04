@@ -36,6 +36,7 @@ FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/Fl
 Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
 Geomorphometry = {rev = "temp_updates", url = "https://github.com/rafaqz/Geomorphometry.jl"}
+Geomorphometry = {rev = "main", url = "https://github.com/EcoJulia/RasterDataSources.jl"}
 
 [extensions]
 MicroclimateMapperMakieExt = "Makie"
