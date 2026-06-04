@@ -668,7 +668,8 @@ else — `DailyTimeseries`, `HourlyTimeseries`, the intermediate buffers —
 just scales with the total timestep count.
 """
 function allocate_weather_buffers(source::Type, nyears::Int)
-    _allocate_weather_buffers(temporal_resolution(source), source, nyears)
+    resolution = temporal_resolution(source)
+    _allocate_weather_buffers(resolution, source, _days_of_year(resolution, nyears))
 end
 
 function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyResolution},
@@ -814,6 +815,9 @@ end
 #   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
 #     and shared with `environment_hourly` exactly as in `HourlyResolution`.
 #   * Daily aggregate buffers (365/year) shared with `environment_daily`.
+function _allocate_weather_buffers(r::SixHourlyResolution, s, days::AbstractVector{Int})
+    _allocate_weather_buffers(r, s, length(days) ÷ 365)
+end
 function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
     n6h    = nyears * 1460   # 4 × 365 native 6h steps
     nhours = nyears * 8760   # hourly output
