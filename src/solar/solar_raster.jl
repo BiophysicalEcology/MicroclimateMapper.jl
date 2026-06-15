@@ -46,7 +46,8 @@ Work is distributed across `Threads.nthreads()` workers — start Julia with
 function CommonSolve.solve(prob::SolarRasterProblem)
     # 1. Load DEM
     dem = if prob.dem_source isa Raster
-        prob.dem_source
+        prob.extent === nothing ? prob.dem_source :
+            crop(prob.dem_source; to = _normalise_solar_extent(prob.extent), touches = true)
     else
         ext = _normalise_solar_extent(prob.extent)
         _load_dem(prob.dem_source, ext)
