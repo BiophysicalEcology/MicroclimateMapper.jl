@@ -44,17 +44,20 @@ Work is distributed across `Threads.nthreads()` workers — start Julia with
 `julia --threads=auto` to use all available cores.
 """
 function CommonSolve.solve(prob::SolarRasterProblem)
-    # 1. Load DEM
-    dem = if prob.dem_source isa Raster
-        prob.extent === nothing ? prob.dem_source :
-            crop(prob.dem_source; to = _normalise_solar_extent(prob.extent), touches = true)
-    else
-        ext = _normalise_solar_extent(prob.extent)
+    # 1. Load DEM — use the full (buffered) area so horizon-angle rays from
+    #    boundary pixels reach real terrain rather than terminating at the DEM edge.
+    ext = prob.extent === nothing ? nothing : _normalise_solar_extent(prob.extent)
+    dem = prob.dem_source isa Raster ?
+        prob.dem_source :
         _load_dem(prob.dem_source, ext)
-    end
 
-    # 2. Compute terrain grids — slope, aspect, horizon angles, lat/lon, pressure
-    terrain = compute_terrain_grids(dem; n_horizon_angles = prob.n_horizon_angles)
+    # 2. Compute terrain grids on the full (buffered) DEM.
+    terrain_full = compute_terrain_grids(dem; n_horizon_angles = prob.n_horizon_angles)
+
+    # 3. Crop terrain to the requested extent so the solar calc only runs on
+    #    the pixels the caller asked for, not the horizon-angle buffer.
+    terrain = ext === nothing ? terrain_full :
+        crop(terrain_full; to = ext, touches = true)
 
     days  = collect(Float64, prob.days)
     hours = collect(Float64, prob.hours)
