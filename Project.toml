@@ -35,7 +35,6 @@ BiophysicalBehaviour = {rev = "main", url = "https://github.com/BiophysicalEcolo
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
 Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
-Geomorphometry = {rev = "temp_updates", url = "https://github.com/rafaqz/Geomorphometry.jl"}
 
 [extensions]
 MicroclimateMapperMakieExt = "Makie"
