@@ -1,4 +1,8 @@
-# NCEPHourly — 6-hourly NCEP/NCAR Reanalysis 1 data, disaggregated to hourly.
+# NCEPHourly — 6-hourly NCEP/NCAR Reanalysis data, disaggregated to hourly.
+#
+# Currently hardcoded to Reanalysis 1 (NCEP/NCAR, 1948–present) via
+# NCEP{SurfaceFlux, 1}. Reanalysis 2 support (NCEP/DOE, 1979–present) would
+# follow the same pattern with NCEP{SurfaceFlux, 2}.
 #
 # All variables are loaded from NCEP{SurfaceFlux, 1} (the T62 Gaussian grid,
 # ~1.875°), which provides 6-hourly 2m temperature, 10m wind, 2m specific
@@ -21,9 +25,10 @@
 """
     NCEPHourly
 
-Weather source for 6-hourly NCEP/NCAR Reanalysis 1 data disaggregated to
+Weather source for 6-hourly NCEP/NCAR Reanalysis data disaggregated to
 true hourly output via solar-geometry-aware shortwave disaggregation and
-linear interpolation for met variables.
+linear interpolation for met variables. Currently uses Reanalysis 1
+(NCEP/NCAR, 1948–present).
 
 All variables are loaded from `NCEP{SurfaceFlux, 1}` (T62 Gaussian grid,
 ~1.875°): 2m air temperature, 10m wind, 2m specific humidity, surface

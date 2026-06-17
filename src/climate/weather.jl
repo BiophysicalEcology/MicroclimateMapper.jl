@@ -223,9 +223,10 @@ function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
     return ti_start, ti_end, _doy_noleap.(dates_vec)
 end
 
-# Native stack has 1460 Ti steps/year (4 × 365); days_doy is one entry per
-# calendar day (365/year) because solar geometry and the derivation chain
-# operate at daily granularity regardless of sub-daily native resolution.
+# Native stack has 1460 Ti steps/year (4 × 365), so the Ti slice is in 6h units.
+# The returned day-of-year vector has one entry per calendar day (365/year)
+# because solar geometry and the derivation chain operate at daily granularity
+# regardless of sub-daily native resolution.
 function _ti_range_for_dates(::SixHourlyResolution, years, dates_vec::Vector{Date})
     start_d, end_d = minimum(dates_vec), maximum(dates_vec)
     years_v = collect(years)
@@ -376,8 +377,7 @@ returned stack. Default empty.
     _extra_getraster_kwargs(source) -> NamedTuple
 
 Extra keyword arguments to splat into every `getraster(source, name; …)`
-call (in addition to the loader's own kwargs like `date`/`month`). NCEP
-uses this to pass `dataset = "reanalysis"`. Default empty.
+call (in addition to the loader's own kwargs like `date`/`month`). Default empty.
 """
 @inline _extra_getraster_kwargs(::Type) = (;)
 
@@ -392,8 +392,8 @@ Source-specific post-processing hook called immediately after every layer of
 `stack` has been loaded. Default is a no-op (returns `stack` unchanged).
 
 Override for sources whose files contain sub-daily Ti that the declared
-`temporal_resolution` does not expect — e.g. `NCEP{SurfaceGauss}` in daily
-mode stores `dswrf` at 3-hourly resolution and needs it averaged to daily.
+`temporal_resolution` does not expect — e.g. `NCEP{SurfaceFlux}` in daily mode
+stores 6-hourly data that needs averaging to daily.
 """
 _post_load_stack!(::Type, stack, _nyears) = stack
 
@@ -828,13 +828,11 @@ end
 #   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
 #     and shared with `environment_hourly` exactly as in `HourlyResolution`.
 #   * Daily aggregate buffers (365/year) shared with `environment_daily`.
-function _allocate_weather_buffers(r::SixHourlyResolution, s, days::AbstractVector{Int})
-    _allocate_weather_buffers(r, s, length(days) ÷ 365)
-end
-function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
-    n6h    = nyears * 1460   # 4 × 365 native 6h steps
-    nhours = nyears * 8760   # hourly output
-    ndays  = nyears * 365
+function _allocate_weather_buffers(::SixHourlyResolution, _source,
+                                   days_of_year::AbstractVector{Int})
+    ndays  = length(days_of_year)   # 365 per year (no-leap calendar)
+    n6h    = ndays * 4              # native 6h staging steps
+    nhours = ndays * 24             # hourly output
     zeros_float(n) = zeros(Float64, n)
 
     # 6h staging buffers (written by _read_native! via WeatherVariable declarations)
@@ -866,8 +864,6 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
     rainfall_daily        = zeros(typeof(0.0u"kg/m^2"), ndays)
     deep_soil_temperature = zeros(typeof(0.0u"K"),       ndays)
     soil_moisture         = zeros_float(ndays)
-
-    days_of_year = repeat(1:365, nyears)
 
     environment_daily = DailyTimeseries(;
         shade               = zeros_float(ndays),
