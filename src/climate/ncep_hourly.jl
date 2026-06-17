@@ -3,14 +3,11 @@
 # The NCEP archive stores met variables and radiation/precipitation in different
 # dataset categories at different temporal resolutions:
 #
-#   NCEP{SixHourlyPressure} — air temperature, U/V wind, specific humidity
-#                              at pressure levels (lowest level ≈ surface);
-#                              1460 steps/year (6-hourly).
-#   NCEP{SixHourlySurface}  — surface pressure (:pres_sfc);
-#                              1460 steps/year (6-hourly).
-#   NCEP{SurfaceGauss}      — downward shortwave/longwave radiation, precip rate;
-#                              sub-daily (may be 3-hourly = 2920/year), aggregated
-#                              to 6-hourly after loading.
+#   NCEP{Pressure,1}    — air temperature, U/V wind, specific humidity
+#                          at pressure levels (lowest level ≈ surface).
+#   NCEP{Surface,1}     — surface pressure (:pres_sfc).
+#   NCEP{SurfaceFlux,1} — downward shortwave/longwave radiation, precip rate.
+# All are natively 6-hourly (1460 steps/year).
 #
 # A custom `_load_weather` merges these three sub-stacks before the canonical
 # pipeline sees the data. The merged stack has native field names that the
@@ -30,10 +27,10 @@ Weather source sentinel type for 6-hourly NCEP/NCAR Reanalysis 1 data,
 disaggregated to true hourly output via solar-geometry-aware shortwave
 disaggregation and linear interpolation for met variables.
 
-Data is loaded from three NCEP dataset categories and merged:
-- `NCEP{SixHourlyPressure}` — air temperature, U/V wind, specific humidity
-- `NCEP{SixHourlySurface}`  — surface pressure
-- `NCEP{SurfaceGauss}`      — shortwave/longwave radiation, precipitation
+Data is loaded from three NCEP groups and merged:
+- `NCEP{Pressure,1}`    — air temperature, U/V wind, specific humidity
+- `NCEP{Surface,1}`     — surface pressure
+- `NCEP{SurfaceFlux,1}` — shortwave/longwave radiation, precipitation
 
 ```julia
 model = MicroMapModel(;
@@ -68,36 +65,24 @@ function weather_variables(::Type{NCEPHourly})
     )
 end
 
-# Custom loader: merges three NCEP sub-stacks and normalises radiation/precip
-# from whatever sub-daily resolution they arrive at down to 6-hourly.
+# Custom loader: merges the three 6-hourly NCEP groups into one stack.
 function _load_weather(::Type{NCEPHourly}, area::Extent, years)
     # 6-hourly met from the lowest pressure level (≈ surface conditions)
-    met = _load_layers(YearlyTimeSeries(), NCEP{SixHourlyPressure},
+    met = _load_layers(YearlyTimeSeries(), NCEP{Pressure,1},
         (:air, :uwnd, :vwnd, :shum), area, years)
 
-    # Surface pressure at 6-hourly resolution
-    sfc = _load_layers(YearlyTimeSeries(), NCEP{SixHourlySurface},
+    # Surface pressure
+    sfc = _load_layers(YearlyTimeSeries(), NCEP{Surface,1},
         (:pres_sfc,), area, years)
 
-    # Radiation and precipitation from SurfaceGauss — may arrive at 3-hourly
-    # (2920/year) and must be aggregated to 6-hourly (1460/year).
-    rad = _load_layers(YearlyTimeSeries(), NCEP{SurfaceGauss},
+    # Radiation and precipitation from the surface-flux group
+    rad = _load_layers(YearlyTimeSeries(), NCEP{SurfaceFlux,1},
         (:dswrf, :dlwrf, :prate), area, years)
-
-    n6h = 1460 * length(years)
-    rad_norm = map((:dswrf, :dlwrf, :prate)) do name
-        layer = getproperty(rad, name)
-        n = size(layer, Ti)
-        n == n6h && return layer
-        n % n6h == 0 || error(
-            "NCEPHourly: $name has Ti=$n, not a multiple of expected 6h count $n6h")
-        return _aggregate_ti_to_daily(layer, n ÷ n6h)
-    end
 
     merged = RasterStack(merge(
         NamedTuple(met),
         NamedTuple(sfc),
-        NamedTuple{(:dswrf, :dlwrf, :prate)}(rad_norm),
+        NamedTuple(rad),
     ))
     return Rasters.replace_missing(merged, NaN)
 end

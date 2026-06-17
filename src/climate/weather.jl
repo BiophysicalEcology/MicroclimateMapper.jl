@@ -362,8 +362,7 @@ returned stack. Default empty.
     _extra_getraster_kwargs(source) -> NamedTuple
 
 Extra keyword arguments to splat into every `getraster(source, name; …)`
-call (in addition to the loader's own kwargs like `date`/`month`). NCEP
-uses this to pass `dataset = "reanalysis"`. Default empty.
+call (in addition to the loader's own kwargs like `date`/`month`). Default empty.
 """
 @inline _extra_getraster_kwargs(::Type) = (;)
 
@@ -378,8 +377,8 @@ Source-specific post-processing hook called immediately after every layer of
 `stack` has been loaded. Default is a no-op (returns `stack` unchanged).
 
 Override for sources whose files contain sub-daily Ti that the declared
-`temporal_resolution` does not expect — e.g. `NCEP{SurfaceGauss}` in daily
-mode stores `dswrf` at 3-hourly resolution and needs it averaged to daily.
+`temporal_resolution` does not expect — e.g. `NCEP{SurfaceFlux}` in daily mode
+stores 6-hourly data that needs averaging to daily.
 """
 _post_load_stack!(::Type, stack, _nyears) = stack
 

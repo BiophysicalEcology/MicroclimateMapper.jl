@@ -1,8 +1,8 @@
 # NCEP/NCAR Reanalysis bindings.
 #
-# Currently supports `NCEP{SurfaceGauss}` — global daily surface-level
-# reanalysis on a Gaussian grid, available 1948-present. Each yearly file
-# (one per layer per year) contains 365 daily timesteps.
+# Currently supports `NCEP{SurfaceFlux}` — global surface-flux reanalysis on
+# the T62 Gaussian grid, available 1948-present. The native files are 6-hourly;
+# `_post_load_stack!` averages them to daily means for this daily path.
 #
 # Wind comes as U/V components (`:uwnd_10m`, `:vwnd_10m`), so the chain's
 # `derive!(:wind_speed)` step combines them into a scalar speed.
@@ -16,13 +16,12 @@
 # derivation from `:dswrf`.
 
 temporal_resolution(::Type{<:NCEP}) = DailyResolution()
-weather_loader(::Type{<:NCEP{SurfaceGauss}}) = YearlyTimeSeries()
+weather_loader(::Type{<:NCEP{SurfaceFlux}}) = YearlyTimeSeries()
 
-# NCEP{SurfaceGauss} stores `dswrf` at sub-daily resolution (3- or 6-hourly,
-# depending on the archive version), while all other variables are daily.
-# Aggregate any layer whose Ti length exceeds the expected 365 × nyears to
-# daily means before the canonical pipeline sees the data.
-function _post_load_stack!(::Type{<:NCEP{SurfaceGauss}}, stack, nyears)
+# NCEP{SurfaceFlux} is natively 6-hourly (1460 steps/year). Average any layer
+# whose Ti length exceeds the expected 365 × nyears to daily means before the
+# canonical pipeline sees the data.
+function _post_load_stack!(::Type{<:NCEP{SurfaceFlux}}, stack, nyears)
     expected = 365 * nyears
     names = keys(stack)
     layers = map(names) do name
@@ -36,11 +35,7 @@ function _post_load_stack!(::Type{<:NCEP{SurfaceGauss}}, stack, nyears)
     return RasterStack(NamedTuple{names}(layers))
 end
 
-# NCEP getraster requires a `dataset` kwarg ("reanalysis" or "reanalysis2");
-# we use the Reanalysis 1 archive throughout.
-_extra_getraster_kwargs(::Type{<:NCEP}) = (; dataset = "reanalysis")
-
-function weather_variables(::Type{<:NCEP{SurfaceGauss}})
+function weather_variables(::Type{<:NCEP{SurfaceFlux}})
     (
         WeatherVariable(:maximum_temperature, :tmax, u"K"),
         WeatherVariable(:minimum_temperature, :tmin, u"K"),
