@@ -397,20 +397,9 @@ stores 6-hourly data that needs averaging to daily.
 """
 _post_load_stack!(::Type, stack, _nyears) = stack
 
-# Average a sub-daily Ti layer down to daily means.
-# `factor` is the number of sub-daily steps per day (e.g. 8 for 3-hourly).
+# Average a sub-daily Ti layer down by `factor` steps using Rasters.aggregate.
 function _aggregate_ti_to_daily(layer::AbstractRaster, factor::Int)
-    ndays = size(layer, Ti) ÷ factor
-    # Reshape Ti into (factor, ndays) blocks and average along the first axis.
-    xy_dims = dims(layer)[1:2]
-    data = parent(layer)
-    # Materialise to a plain Array so we can reshape.
-    arr = Array(data)
-    # Layout: (nx, ny, nsteps). Reshape last dim to (factor, ndays).
-    nx, ny = size(arr, 1), size(arr, 2)
-    reshaped = reshape(arr, nx, ny, factor, ndays)
-    daily = dropdims(sum(reshaped; dims = 3); dims = 3) ./ factor
-    return Raster(daily, (xy_dims..., Ti(1:ndays)); crs = crs(layer))
+    return Rasters.aggregate(mean, layer, (Ti(factor),))
 end
 
 """
@@ -828,6 +817,10 @@ end
 #   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
 #     and shared with `environment_hourly` exactly as in `HourlyResolution`.
 #   * Daily aggregate buffers (365/year) shared with `environment_daily`.
+# TODO: The buffer schema here differs from HourlyResolution (uses u/v_wind_6h and
+# specific_humidity_6h/surface_pressure_6h staging fields instead of bare u/v_wind and
+# dewpoint_temperature), so the duplication can't be eliminated by simply extending the
+# hourly allocator. Addressed holistically in the SubDailyResolution{N} refactor.
 function _allocate_weather_buffers(::SixHourlyResolution, _source,
                                    days_of_year::AbstractVector{Int})
     ndays  = length(days_of_year)   # 365 per year (no-leap calendar)
@@ -1288,9 +1281,10 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
     return nothing
 end
 
-# Scalar wind speed from U/V components at 6h resolution.
+# Scalar wind speed from U/V components at 6h resolution, corrected from
+# 10 m measurement height to 2 m reference height via power-law shear.
 function derive!(::Val{:wind_speed_6h}, buffers, _ctx)
-    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2)
+    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2) * _WIND_10M_TO_2M_SHEAR
     return nothing
 end
 
