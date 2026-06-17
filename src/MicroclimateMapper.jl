@@ -43,8 +43,6 @@ export
     DryAdiabaticLapseRate,
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
-    # Temporal resolution traits
-    SixHourlyResolution,
     # Weather sources
     NCEPHourly,
     # Microclimate drivers
@@ -71,7 +69,6 @@ include("climate/weather.jl")
 include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
-include("climate/ncep.jl")
 include("climate/ncep_hourly.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")

@@ -223,6 +223,19 @@ function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
     return ti_start, ti_end, _doy_noleap.(dates_vec)
 end
 
+# Native stack has 1460 Ti steps/year (4 × 365); days_doy is one entry per
+# calendar day (365/year) because solar geometry and the derivation chain
+# operate at daily granularity regardless of sub-daily native resolution.
+function _ti_range_for_dates(::SixHourlyResolution, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 1460 + (_doy_noleap(start_d) - 1) * 4 + 1
+    ti_end   = (yi_end   - 1) * 1460 + _doy_noleap(end_d) * 4
+    return ti_start, ti_end, _doy_noleap.(dates_vec)
+end
+
 # One "anchor" Date per solver step — used to carry the year when building
 # the output DateTime axis. Monthly: 1st of each selected month. Daily/hourly:
 # the dates_vec itself (already one per calendar day).
@@ -852,6 +865,7 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
     # Daily aggregate buffers — shared with environment_daily
     rainfall_daily        = zeros(typeof(0.0u"kg/m^2"), ndays)
     deep_soil_temperature = zeros(typeof(0.0u"K"),       ndays)
+    soil_moisture         = zeros_float(ndays)
 
     days_of_year = repeat(1:365, nyears)
 
@@ -882,7 +896,7 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
         pressure, cloud_cover, global_radiation, longwave_radiation,
         rainfall, zenith_angle, actual_vapour_pressure,
         # daily
-        rainfall_daily, deep_soil_temperature,
+        rainfall_daily, deep_soil_temperature, soil_moisture,
         days_of_year,
         environment_minmax = nothing,
         environment_daily, environment_hourly,
