@@ -4,6 +4,7 @@ using MicroclimateMapper
 using MicroclimateMapper: _canonical_data, _is_special_key, _resolve_init, _DEFAULT_INIT,
     _to_extent, _build_area_mask, _first_active_index, _is_active
 using Microclimate: example_microclimate_problem, example_soil_profile
+using RasterDataSources
 using Rasters
 using Rasters: X, Y, Ti
 using Rasters.DimensionalData: DimIndices

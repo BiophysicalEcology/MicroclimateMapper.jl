@@ -1,6 +1,8 @@
 using Test
 using MicroclimateMapper
-using MicroclimateMapper: landcover_weighted
+using MicroclimateMapper: landcover_weighted, default_landcover_albedo,
+    default_landcover_roughness
+using RasterDataSources
 using Rasters
 using Rasters: X, Y, RasterStack
 using Unitful

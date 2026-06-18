@@ -223,6 +223,20 @@ function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
     return ti_start, ti_end, _doy_noleap.(dates_vec)
 end
 
+# Native stack has 1460 Ti steps/year (4 × 365), so the Ti slice is in 6h units.
+# The returned day-of-year vector has one entry per calendar day (365/year)
+# because solar geometry and the derivation chain operate at daily granularity
+# regardless of sub-daily native resolution.
+function _ti_range_for_dates(::SixHourlyResolution, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 1460 + (_doy_noleap(start_d) - 1) * 4 + 1
+    ti_end   = (yi_end   - 1) * 1460 + _doy_noleap(end_d) * 4
+    return ti_start, ti_end, _doy_noleap.(dates_vec)
+end
+
 # One "anchor" Date per solver step — used to carry the year when building
 # the output DateTime axis. Monthly: 1st of each selected month. Daily/hourly:
 # the dates_vec itself (already one per calendar day).
@@ -363,8 +377,7 @@ returned stack. Default empty.
     _extra_getraster_kwargs(source) -> NamedTuple
 
 Extra keyword arguments to splat into every `getraster(source, name; …)`
-call (in addition to the loader's own kwargs like `date`/`month`). NCEP
-uses this to pass `dataset = "reanalysis"`. Default empty.
+call (in addition to the loader's own kwargs like `date`/`month`). Default empty.
 """
 @inline _extra_getraster_kwargs(::Type) = (;)
 
@@ -379,25 +392,14 @@ Source-specific post-processing hook called immediately after every layer of
 `stack` has been loaded. Default is a no-op (returns `stack` unchanged).
 
 Override for sources whose files contain sub-daily Ti that the declared
-`temporal_resolution` does not expect — e.g. `NCEP{SurfaceGauss}` in daily
-mode stores `dswrf` at 3-hourly resolution and needs it averaged to daily.
+`temporal_resolution` does not expect — e.g. `NCEP{SurfaceFlux}` in daily mode
+stores 6-hourly data that needs averaging to daily.
 """
 _post_load_stack!(::Type, stack, _nyears) = stack
 
-# Average a sub-daily Ti layer down to daily means.
-# `factor` is the number of sub-daily steps per day (e.g. 8 for 3-hourly).
+# Average a sub-daily Ti layer down by `factor` steps using Rasters.aggregate.
 function _aggregate_ti_to_daily(layer::AbstractRaster, factor::Int)
-    ndays = size(layer, Ti) ÷ factor
-    # Reshape Ti into (factor, ndays) blocks and average along the first axis.
-    xy_dims = dims(layer)[1:2]
-    data = parent(layer)
-    # Materialise to a plain Array so we can reshape.
-    arr = Array(data)
-    # Layout: (nx, ny, nsteps). Reshape last dim to (factor, ndays).
-    nx, ny = size(arr, 1), size(arr, 2)
-    reshaped = reshape(arr, nx, ny, factor, ndays)
-    daily = dropdims(sum(reshaped; dims = 3); dims = 3) ./ factor
-    return Raster(daily, (xy_dims..., Ti(1:ndays)); crs = crs(layer))
+    return Rasters.aggregate(mean, layer, (Ti(factor),))
 end
 
 """
@@ -815,13 +817,15 @@ end
 #   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
 #     and shared with `environment_hourly` exactly as in `HourlyResolution`.
 #   * Daily aggregate buffers (365/year) shared with `environment_daily`.
-function _allocate_weather_buffers(r::SixHourlyResolution, s, days::AbstractVector{Int})
-    _allocate_weather_buffers(r, s, length(days) ÷ 365)
-end
-function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
-    n6h    = nyears * 1460   # 4 × 365 native 6h steps
-    nhours = nyears * 8760   # hourly output
-    ndays  = nyears * 365
+# TODO: The buffer schema here differs from HourlyResolution (uses u/v_wind_6h and
+# specific_humidity_6h/surface_pressure_6h staging fields instead of bare u/v_wind and
+# dewpoint_temperature), so the duplication can't be eliminated by simply extending the
+# hourly allocator. Addressed holistically in the SubDailyResolution{N} refactor.
+function _allocate_weather_buffers(::SixHourlyResolution, _source,
+                                   days_of_year::AbstractVector{Int})
+    ndays  = length(days_of_year)   # 365 per year (no-leap calendar)
+    n6h    = ndays * 4              # native 6h staging steps
+    nhours = ndays * 24             # hourly output
     zeros_float(n) = zeros(Float64, n)
 
     # 6h staging buffers (written by _read_native! via WeatherVariable declarations)
@@ -852,8 +856,7 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
     # Daily aggregate buffers — shared with environment_daily
     rainfall_daily        = zeros(typeof(0.0u"kg/m^2"), ndays)
     deep_soil_temperature = zeros(typeof(0.0u"K"),       ndays)
-
-    days_of_year = repeat(1:365, nyears)
+    soil_moisture         = zeros_float(ndays)
 
     environment_daily = DailyTimeseries(;
         shade               = zeros_float(ndays),
@@ -882,7 +885,7 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source, nyears::Int)
         pressure, cloud_cover, global_radiation, longwave_radiation,
         rainfall, zenith_angle, actual_vapour_pressure,
         # daily
-        rainfall_daily, deep_soil_temperature,
+        rainfall_daily, deep_soil_temperature, soil_moisture,
         days_of_year,
         environment_minmax = nothing,
         environment_daily, environment_hourly,
@@ -1278,9 +1281,10 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
     return nothing
 end
 
-# Scalar wind speed from U/V components at 6h resolution.
+# Scalar wind speed from U/V components at 6h resolution, corrected from
+# 10 m measurement height to 2 m reference height via power-law shear.
 function derive!(::Val{:wind_speed_6h}, buffers, _ctx)
-    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2)
+    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2) * _WIND_10M_TO_2M_SHEAR
     return nothing
 end
 

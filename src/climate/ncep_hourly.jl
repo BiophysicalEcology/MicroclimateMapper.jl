@@ -1,21 +1,20 @@
-# NCEPHourly — 6-hourly NCEP/NCAR Reanalysis bindings.
+# NCEPHourly — 6-hourly NCEP/NCAR Reanalysis data, disaggregated to hourly.
 #
-# The NCEP archive stores met variables and radiation/precipitation in different
-# dataset categories at different temporal resolutions:
+# Currently hardcoded to Reanalysis 1 (NCEP/NCAR, 1948–present) via
+# NCEP{SurfaceFlux, 1}. Reanalysis 2 support (NCEP/DOE, 1979–present) would
+# follow the same pattern with NCEP{SurfaceFlux, 2}.
 #
-#   NCEP{SixHourlyPressure} — air temperature, U/V wind, specific humidity
-#                              at pressure levels (lowest level ≈ surface);
-#                              1460 steps/year (6-hourly).
-#   NCEP{SixHourlySurface}  — surface pressure (:pres_sfc);
-#                              1460 steps/year (6-hourly).
-#   NCEP{SurfaceGauss}      — downward shortwave/longwave radiation, precip rate;
-#                              sub-daily (may be 3-hourly = 2920/year), aggregated
-#                              to 6-hourly after loading.
+# All variables are loaded from NCEP{SurfaceFlux, 1} (the T62 Gaussian grid,
+# ~1.875°), which provides 6-hourly 2m temperature, 10m wind, 2m specific
+# humidity, surface pressure, radiation, and precipitation in a single
+# consistent group. This avoids the much larger pressure-level files
+# (NCEP{Pressure, 1}) which contain all 17 standard levels when only the
+# surface-adjacent level is needed.
 #
-# A custom `_load_weather` merges these three sub-stacks before the canonical
-# pipeline sees the data. The merged stack has native field names that the
-# `WeatherVariable` declarations in `weather_variables(NCEPHourly)` map to the
-# `*_6h` staging buffers in `_allocate_weather_buffers(::SixHourlyResolution)`.
+# Some archive years store radiation/precip at 3-hourly resolution (2920
+# steps/year). These are averaged to 6-hourly here to fit the `*_6h` staging
+# buffers. The follow-up SubDailyResolution{N} refactor will instead
+# interpolate 3-hourly data directly to hourly, preserving full resolution.
 #
 # The `_DERIVATIONS_6H_TO_1H` chain (see weather.jl) then disaggregates/
 # interpolates the staging buffers to hourly canonical output:
@@ -26,14 +25,14 @@
 """
     NCEPHourly
 
-Weather source sentinel type for 6-hourly NCEP/NCAR Reanalysis 1 data,
-disaggregated to true hourly output via solar-geometry-aware shortwave
-disaggregation and linear interpolation for met variables.
+Weather source for 6-hourly NCEP/NCAR Reanalysis data disaggregated to
+true hourly output via solar-geometry-aware shortwave disaggregation and
+linear interpolation for met variables. Currently uses Reanalysis 1
+(NCEP/NCAR, 1948–present).
 
-Data is loaded from three NCEP dataset categories and merged:
-- `NCEP{SixHourlyPressure}` — air temperature, U/V wind, specific humidity
-- `NCEP{SixHourlySurface}`  — surface pressure
-- `NCEP{SurfaceGauss}`      — shortwave/longwave radiation, precipitation
+All variables are loaded from `NCEP{SurfaceFlux, 1}` (T62 Gaussian grid,
+~1.875°): 2m air temperature, 10m wind, 2m specific humidity, surface
+pressure, shortwave/longwave radiation, and precipitation.
 
 ```julia
 model = MicroMapModel(;
@@ -51,42 +50,35 @@ weather_derivations(::Type{NCEPHourly}) = _DERIVATIONS_6H_TO_1H
 weather_area_buffer(::Type{NCEPHourly}) = 4.0
 
 # 6-hourly NCEP variables — written into the `*_6h` staging buffers.
-# Native field names match the keys in the merged stack produced by
-# `_load_weather(::Type{NCEPHourly}, ...)` below.
+# Native field names are the layer keys in NCEP{SurfaceFlux, 1}.
 function weather_variables(::Type{NCEPHourly})
     (
-        WeatherVariable(:reference_temperature_6h,        :air,     u"K"),
-        WeatherVariable(:u_wind_6h,                       :uwnd,    u"m/s"),
-        WeatherVariable(:v_wind_6h,                       :vwnd,    u"m/s"),
-        WeatherVariable(:specific_humidity_6h,            :shum,    1),
-        WeatherVariable(:surface_pressure_6h,             :pres_sfc, u"Pa"),
-        WeatherVariable(:downward_shortwave_radiation_6h, :dswrf,   u"W/m^2"),
-        WeatherVariable(:longwave_radiation_6h,           :dlwrf,   u"W/m^2"),
+        WeatherVariable(:reference_temperature_6h,        :air_2m,   u"K"),
+        WeatherVariable(:u_wind_6h,                       :uwnd_10m, u"m/s"),
+        WeatherVariable(:v_wind_6h,                       :vwnd_10m, u"m/s"),
+        WeatherVariable(:specific_humidity_6h,            :shum_2m,  1),
+        WeatherVariable(:surface_pressure_6h,             :pres,     u"Pa"),
+        WeatherVariable(:downward_shortwave_radiation_6h, :dswrf,    u"W/m^2"),
+        WeatherVariable(:longwave_radiation_6h,           :dlwrf,    u"W/m^2"),
         # prate is kg/m²/s; multiply by 6 h × 3600 s/h → kg/m² per 6 h block.
-        WeatherVariable(:rainfall_6h,                     :prate,   u"kg/m^2",
+        WeatherVariable(:rainfall_6h,                     :prate,    u"kg/m^2",
                         raw -> raw * 21600.0),
     )
 end
 
-# Custom loader: merges three NCEP sub-stacks and normalises radiation/precip
-# from whatever sub-daily resolution they arrive at down to 6-hourly.
+# Load all variables from a single NCEP{SurfaceFlux, 1} stack, then normalise
+# any layers that arrive at 3-hourly resolution down to 6-hourly.
 function _load_weather(::Type{NCEPHourly}, area::Extent, years)
-    # 6-hourly met from the lowest pressure level (≈ surface conditions)
-    met = _load_layers(YearlyTimeSeries(), NCEP{SixHourlyPressure},
-        (:air, :uwnd, :vwnd, :shum), area, years)
+    stack = _load_layers(YearlyTimeSeries(), NCEP{SurfaceFlux, 1},
+        (:air_2m, :shum_2m, :uwnd_10m, :vwnd_10m, :pres, :dswrf, :dlwrf, :prate),
+        area, years)
 
-    # Surface pressure at 6-hourly resolution
-    sfc = _load_layers(YearlyTimeSeries(), NCEP{SixHourlySurface},
-        (:pres_sfc,), area, years)
-
-    # Radiation and precipitation from SurfaceGauss — may arrive at 3-hourly
-    # (2920/year) and must be aggregated to 6-hourly (1460/year).
-    rad = _load_layers(YearlyTimeSeries(), NCEP{SurfaceGauss},
-        (:dswrf, :dlwrf, :prate), area, years)
-
+    # Normalise any 3-hourly layers (2920/year) to 6-hourly (1460/year).
+    # See note in file header; SubDailyResolution{N} will handle this properly.
     n6h = 1460 * length(years)
-    rad_norm = map((:dswrf, :dlwrf, :prate)) do name
-        layer = getproperty(rad, name)
+    names = keys(stack)
+    layers = map(names) do name
+        layer = getproperty(stack, name)
         n = size(layer, Ti)
         n == n6h && return layer
         n % n6h == 0 || error(
@@ -94,10 +86,5 @@ function _load_weather(::Type{NCEPHourly}, area::Extent, years)
         return _aggregate_ti_to_daily(layer, n ÷ n6h)
     end
 
-    merged = RasterStack(merge(
-        NamedTuple(met),
-        NamedTuple(sfc),
-        NamedTuple{(:dswrf, :dlwrf, :prate)}(rad_norm),
-    ))
-    return Rasters.replace_missing(merged, NaN)
+    return Rasters.replace_missing(RasterStack(NamedTuple{names}(layers)), NaN)
 end

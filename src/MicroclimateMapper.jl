@@ -43,8 +43,6 @@ export
     DryAdiabaticLapseRate,
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
-    # Temporal resolution traits
-    SixHourlyResolution,
     # Weather sources
     NCEPHourly,
     # Microclimate drivers
