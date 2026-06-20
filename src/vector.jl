@@ -178,6 +178,13 @@ function CommonSolve.init(problem::MicroVectorProblem)
     ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
     anchor_dates = _step_anchor_dates(resolution, dates_vec)
 
+    @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
+    @info "init: DEM source:       $(dem_source)"
+    @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
+    @info "init: roughness height: $(_source_label(roughness_height_source))"
+    @info "init: terrain:          $(model.compute_terrain ? "slope/aspect/horizon computed from DEM" : "flat (compute_terrain=false)")"
+    @info "init: points:           $(length(points))"
+
     area = _points_extent(points)
     points_dim = _make_points_dim(points)
 
@@ -197,8 +204,9 @@ function CommonSolve.init(problem::MicroVectorProblem)
     # positional Ti indexing works for both integer and DateTime Ti axes.
     weather_native = weather_native[Ti(ti_start:ti_end)]
     dem_native = _resolve_dem(data, dem_source, area)
-    terrain_native = compute_terrain_grids(dem_native;
-        template = nothing, n_horizon_angles = N_HORIZON_ANGLES)
+    terrain_native = model.compute_terrain ?
+        compute_terrain_grids(dem_native; template = nothing, n_horizon_angles = N_HORIZON_ANGLES) :
+        _flat_terrain_stack(dem_native, N_HORIZON_ANGLES)
 
     weather = _stack_to_points(weather_native, points_dim)
     terrain = _stack_to_points(terrain_native, points_dim)

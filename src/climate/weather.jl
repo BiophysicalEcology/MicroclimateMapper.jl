@@ -381,6 +381,19 @@ call (in addition to the loader's own kwargs like `date`/`month`). Default empty
 """
 @inline _extra_getraster_kwargs(::Type) = (;)
 
+"""
+    weather_grid_elevation(source, weather, I) -> Quantity or nothing
+
+Return the weather grid's elevation at spatial index `I` as a `Unitful` length
+(e.g. `450.0u"m"`), or `nothing` if the source does not carry its own elevation.
+
+When `nothing` is returned, lapse rate correction is skipped (effectively
+`grid_elevation = site.elevation`, so `Δz = 0`). Sources that ship their own
+elevation layer (e.g. CRUCL2 via its `elv` variable) should override this to
+activate the lapse correction machinery in `_lapse_correct!`.
+"""
+@inline weather_grid_elevation(::Type, _weather, _I) = nothing
+
 # ---------------------------------------------------------------------------
 # Generic _load_weather
 # ---------------------------------------------------------------------------
@@ -919,6 +932,7 @@ function assemble_weather!(
     vapour_pressure_method = GoffGratch(),
     lapse_rate_model::LapseRate = EnvironmentalLapseRate(),
     canonical_overrides::NamedTuple = (;),
+    wind_reference_height = 2.0u"m",
 )
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
@@ -929,6 +943,7 @@ function assemble_weather!(
         site, grid_elevation, lapse_rate_model, vapour_pressure_method,
         atmospheric_pressure = atm_pressure, scratch,
         steps_per_year = spy,
+        wind_reference_height,
     )
 
     _read_native!(buffers, weather, variables, I)
@@ -1069,7 +1084,8 @@ end
     if iszero(Δz)
         @. out = src
     else
-        @. out = lapse_adjust_temperature(lapse_rate_model, src, Δz)
+        lr = lapse_rate(lapse_rate_model)   # scalar K/m — extract before broadcast
+        @. out = src - lr * Δz
     end
     return nothing
 end
@@ -1132,11 +1148,15 @@ function derive!(::Val{:wind_speed}, buffers, ctx)
     return nothing
 end
 
-# 10 m → 2 m wind power-law (exponent 0.15).
-const _WIND_10M_TO_2M_SHEAR = (2.0 / 10.0)^0.15
+# Power-law wind height correction: scale wind from `z_src` measurement height
+# to `z_ref` reference height using a neutral-stability shear exponent α = 0.15.
+# Accepts plain numbers (metres assumed) or Unitful lengths; dividing same-unit
+# quantities yields a dimensionless ratio, so no stripping is needed.
+_wind_height_correction(z_ref, z_src = 10.0u"m", α = 0.15) = (z_ref / z_src)^α
 
 function derive!(::Val{:reference_wind_max}, buffers, ctx)
-    @. buffers.reference_wind_max = buffers.wind_speed * _WIND_10M_TO_2M_SHEAR
+    shear = _wind_height_correction(ctx.wind_reference_height)
+    @. buffers.reference_wind_max = buffers.wind_speed * shear
     return nothing
 end
 
@@ -1282,9 +1302,10 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
 end
 
 # Scalar wind speed from U/V components at 6h resolution, corrected from
-# 10 m measurement height to 2 m reference height via power-law shear.
-function derive!(::Val{:wind_speed_6h}, buffers, _ctx)
-    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2) * _WIND_10M_TO_2M_SHEAR
+# 10 m measurement height to the model reference height via power-law shear.
+function derive!(::Val{:wind_speed_6h}, buffers, ctx)
+    shear = _wind_height_correction(ctx.wind_reference_height)
+    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2) * shear
     return nothing
 end
 

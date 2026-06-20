@@ -123,6 +123,7 @@ extents and time ranges — pair with a `MicroRasterProblem` (grid) or
     roughness_height_source::RHS = nothing
     output_layers::OL = _DEFAULT_OUTPUT_LAYERS
     lapse_rate_model::LRT = EnvironmentalLapseRate()
+    compute_terrain::Bool = true
 end
 
 # Per-run workspace built by `init(problem)`. Holds the spatially-extracted
@@ -228,13 +229,45 @@ _build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
 @inline _is_active(_I::Tuple, ::Nothing) = true
 @inline _is_active(I::Tuple, mask) = mask[I...]
 
-_first_active_index(rast, ::Nothing) = first(DimIndices(rast))
-function _first_active_index(rast, mask)
-    for I in DimIndices(rast)
-        mask[I...] && return I
+# Returns true when ANY weather layer is NaN at I — ocean, outside the land
+# mask, or a coastal pixel where cubic-spline resampling produced NaN.
+@inline function _is_missing_pixel(weather, I)
+    return any(values(weather)) do layer
+        isnan(Float64(layer[I..., Ti(1)]))
     end
-    error("Area mask excludes every pixel of the template — nothing to solve.")
 end
+
+_first_active_index(rast, ::Nothing, weather) = _first_nonmissing(DimIndices(rast), weather)
+function _first_active_index(rast, mask, weather)
+    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather)
+end
+function _first_nonmissing(indices, weather)
+    for I in indices
+        _is_missing_pixel(weather, I) || return I
+    end
+    error("All pixels are masked or have missing weather data (ocean?).")
+end
+
+# ---------------------------------------------------------------------------
+# Source-label helper — shared by raster and vector init @info messages
+# ---------------------------------------------------------------------------
+
+function _soil_moisture_label(strategy, soil_moisture_available, init_inputs)
+    if nameof(typeof(strategy)) === :PrescribedSoilMoisture
+        hasproperty(strategy, :precomputed_soil_moisture) &&
+            !isnothing(strategy.precomputed_soil_moisture) && return "prescribed (time-varying, precomputed)"
+        soil_moisture_available                            && return "prescribed (time-varying, from weather source)"
+        !isnothing(init_inputs.soil_moisture)             && return "prescribed (fixed, user-supplied)"
+        return "prescribed (fixed, default)"
+    end
+    return string(nameof(typeof(strategy)))
+end
+
+_source_label(::Nothing)                                      = "from landcover"
+_source_label(x::Number)                                      = "fixed: $x"
+_source_label(x::Quantity)                                    = "fixed: $x"
+_source_label(::Raster)                                       = "user Raster"
+_source_label(s::Type{<:RasterDataSources.RasterDataSource})  = string(s)
 
 # ---------------------------------------------------------------------------
 # Native surface-property resolution
@@ -322,6 +355,13 @@ function _build_inputs_and_pool(;
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
+    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))"
+    @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
+    @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
+    @info "model: threads:         $(Threads.nthreads())"
+
     resolution = temporal_resolution(weather_source)
     # `solar_ndays` is the number of distinct solar-geometry days per year —
     # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
@@ -356,8 +396,11 @@ function _build_inputs_and_pool(;
             albedo = albedo_grid[I...],
             roughness_height = roughness_grid[I...],
         )
+        ge = weather_grid_elevation(weather_source, weather, I)
         env = assemble_weather!(scratch, weather, weather_source, site, I;
-            vapour_pressure_method, lapse_rate_model, canonical_overrides)
+            vapour_pressure_method, lapse_rate_model, canonical_overrides,
+            grid_elevation = isnothing(ge) ? site.elevation : ge,
+            wind_reference_height = maximum(micro_model.heights))
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
             soil_moisture_available, micro_model.depths,
@@ -377,7 +420,7 @@ function _build_inputs_and_pool(;
     end
 
     npixels = length(terrain.elevation)
-    first_I = first(DimIndices(terrain.elevation))
+    first_I = _first_active_index(terrain.elevation, nothing, weather)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
          scratch)
@@ -413,6 +456,7 @@ The two-arg form writes into the supplied `output` and returns it, for
 callers that want to reuse storage across runs.
 """
 function CommonSolve.solve!(cache::MicroMapCache)
+    @info "solve: solving first pixel..."
     proto, first_I, first_result = _solve_proto_pixel!(cache)
     try
         layers = cache.problem.model.output_layers
@@ -420,6 +464,7 @@ function CommonSolve.solve!(cache::MicroMapCache)
             cache.terrain, first_result, layers,
             cache.init_inputs.anchor_dates, cache.mask)
         _write_output!(output, first_result, layers, first_I)
+        @info "solve: starting main loop..."
         return _solve_remaining!(output, cache, proto, first_I)
     catch
         put!(cache.cache_pool, proto)
@@ -439,16 +484,27 @@ function CommonSolve.solve!(output::RasterStack, cache::MicroMapCache)
     end
 end
 
-# Pull worker #1 from the pool, solve the first active pixel with it, return
-# the worker + its result for output sizing/writing. The caller is
-# responsible for returning the worker to the pool (via `_solve_remaining!`
-# or its catch path).
+# Pull worker #1 from the pool and solve the first pixel that both passes the
+# missing-data check and actually converges. This pixel sizes the output
+# arrays, so we must find one that completes. Coastal pixels with
+# post-resample NaN in derived quantities can pass `_is_missing_pixel` but
+# still fail the ODE; we skip those silently and try the next candidate.
 function _solve_proto_pixel!(cache)
-    first_I = _first_active_index(cache.terrain.elevation, cache.mask)
-    proto = take!(cache.cache_pool)
-    reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, first_I))
-    solve!(proto.micro)
-    return proto, first_I, proto.micro.output
+    weather = cache.weather
+    mask    = cache.mask
+    proto   = take!(cache.cache_pool)
+    for I in DimIndices(cache.terrain.elevation)
+        _is_active(I, mask)       || continue
+        _is_missing_pixel(weather, I) && continue
+        reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
+        try
+            solve!(proto.micro)
+            return proto, I, proto.micro.output
+        catch
+        end
+    end
+    put!(cache.cache_pool, proto)
+    error("No pixel solved successfully — all pixels are masked, ocean, or have invalid weather data.")
 end
 
 function _solve_remaining!(output, cache, proto, first_I)
@@ -456,17 +512,30 @@ function _solve_remaining!(output, cache, proto, first_I)
     layers = cache.problem.model.output_layers
     build_inputs = cache.init_inputs.build_inputs
     mask = cache.mask
+    weather = cache.weather
     put!(cache_pool, proto)
 
     pixel_indices = DimIndices(cache.terrain.elevation)
-    npixels = length(pixel_indices)
-    work = Channel{eltype(pixel_indices)}(max(npixels - 1, 1))
+    work = Channel{eltype(pixel_indices)}(max(length(pixel_indices) - 1, 1))
+    nwork = 0
+    @info "solve: building work channel ($(length(pixel_indices)) pixels)..."
     for I in pixel_indices
         I == first_I && continue
         _is_active(I, mask) || continue
+        _is_missing_pixel(weather, I) && continue
         put!(work, I)
+        nwork += 1
     end
     close(work)
+    npixels_active = nwork + 1  # proto pixel already solved
+
+    # Show progress only for non-trivial runs (> 10 active pixels).
+    # The time check runs inside the worker loop (not a separate task) so it
+    # fires even when all threads are saturated with ODE solving.
+    show_progress = npixels_active > 10
+    done = Threads.Atomic{Int}(1)
+    t_start = time()
+    last_report = Ref(t_start - 10.1)  # triggers first print after 10 s
 
     nworkers = cache_pool.sz_max
     @sync for _ in 1:nworkers
@@ -475,8 +544,23 @@ function _solve_remaining!(output, cache, proto, first_I)
             try
                 for I in work
                     reinit!(c.micro, build_inputs(c.scratch, I))
-                    solve!(c.micro)
+                    try
+                        solve!(c.micro)
+                    catch
+                        continue  # leave output as NaN for failed pixels
+                    end
                     _write_output!(output, c.micro.output, layers, I)
+                    n = Threads.atomic_add!(done, 1) + 1
+                    if show_progress
+                        t_now = time()
+                        if t_now - last_report[] >= 10.0
+                            last_report[] = t_now
+                            elapsed = t_now - t_start
+                            pct   = round(Int, 100 * n / npixels_active)
+                            eta_s = round(Int, elapsed / n * (npixels_active - n))
+                            @info "Raster solve: $n / $npixels_active pixels ($pct%) — ETA $(eta_s)s"
+                        end
+                    end
                 end
             finally
                 put!(cache_pool, c)
@@ -528,9 +612,12 @@ function _allocate_layer(proto, spec::LayerSpec{<:Any, K}, spatial_dims, extra, 
     return _allocate_layer_array(T, ds, mask)
 end
 
-_allocate_layer_array(T, ds, ::Nothing) = Raster(zeros(T, map(length, ds)...), ds)
+_allocate_layer_array(T, ds, ::Nothing) = Raster(fill(_nan_of(T), map(length, ds)...), ds)
 _allocate_layer_array(T, ds, _mask) =
     Rasters.create(nothing, T, ds; missingval = missing, fill = missing)
+
+_nan_of(::Type{T}) where T<:AbstractFloat  = T(NaN)
+_nan_of(::Type{T}) where T<:Quantity       = NaN * oneunit(T)
 
 # `I` is a tuple of dim selectors from `DimIndices`: `(X(i), Y(j))` in grid
 # mode, `(Dim{:point}(p),)` in points mode. The spatial axes are addressed
