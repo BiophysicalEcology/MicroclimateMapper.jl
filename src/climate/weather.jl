@@ -649,6 +649,7 @@ const _DERIVATIONS_6H_TO_1H = (
     Val(:wind_speed_6h),
     Val(:actual_vapour_pressure_6h),
     Val(:interpolate_met_6h_to_1h),
+    Val(:apply_wind_shear),
     Val(:disaggregate_radiation_6h_to_1h),
     Val(:reference_humidity),
     Val(:rainfall_daily_from_6h),
@@ -1301,11 +1302,17 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
     return nothing
 end
 
-# Scalar wind speed from U/V components at 6h resolution, corrected from
-# 10 m measurement height to the model reference height via power-law shear.
-function derive!(::Val{:wind_speed_6h}, buffers, ctx)
+# Scalar wind speed from U/V components at 6h resolution (at source height, 10 m).
+function derive!(::Val{:wind_speed_6h}, buffers, _ctx)
+    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2)
+    return nothing
+end
+
+# Apply power-law height correction to the hourly wind_speed buffer after
+# interpolation from 6h. Separated from wind_speed_6h so each step has one concern.
+function derive!(::Val{:apply_wind_shear}, buffers, ctx)
     shear = _wind_height_correction(ctx.wind_reference_height)
-    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2) * shear
+    @. buffers.wind_speed *= shear
     return nothing
 end
 
