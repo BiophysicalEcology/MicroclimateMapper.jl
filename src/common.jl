@@ -316,22 +316,27 @@ end
 function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
-    init_inputs, soil_moisture_available, days, cloud_constants,
+    init_inputs, soil_moisture_available, years, days, cloud_constants,
     soil_profile,
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
     resolution = temporal_resolution(weather_source)
+    # `solar_ndays` is the number of distinct solar-geometry days per year —
+    # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
+    # scratch.solar.out sizing. Using steps_per_year here would over-allocate
+    # for HourlyResolution (8760 × 24 entries instead of 365 × 24).
+    solar_ndays = _solar_ndays_per_year(resolution) * length(years)
     time_mode = _time_mode(resolution)
+    nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
     # `days` is the doy vector: one per unique day (daily/hourly) or one per
     # selected month (monthly). Solar radiation is computed for each entry × 24 hours.
-    nsteps = length(cloud_constants.hours) * length(days)
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, days),
+        weather = allocate_weather_buffers(weather_source, length(years)),
         solar = (;
-            out = allocate_output_arrays(nsteps, length(days), nmax),
+            out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),
         ),
         cloud_constants,

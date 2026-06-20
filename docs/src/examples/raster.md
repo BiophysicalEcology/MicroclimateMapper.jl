@@ -8,11 +8,11 @@ This example mirrors `raster_demo.jl` in
 [MicroclimateTalk](https://github.com/BiophysicalEcology/MicroclimateTalk),
 shortened to a one-week window so it stays fast for documentation builds.
 
-```@setup raster
+<!-- @setup raster
 include(joinpath(@__DIR__, "..", "plotting.jl"))
-```
+-->
 
-```@example raster
+```julia
 using MicroclimateMapper
 using Microclimate
 using Microclimate: example_soil_profile,
@@ -56,7 +56,6 @@ problem = MicroRasterProblem(;
 )
 
 output = solve(problem)
-nothing # hide
 ```
 
 The result is a `RasterStack` keyed by output layer, with `X`, `Y`, `Ti`,
@@ -69,7 +68,7 @@ Six panels show the same patch at midnight, dawn, mid-morning, midday,
 mid-afternoon, and dusk on the first day of the run, draped on the SRTM
 DEM. Aspect and elevation drive the spread across cells.
 
-```@example raster
+```julia
 soil_temperature_5cm = ustrip.(u"°C",
     view(output.soil_temperature; depth = 3))
 

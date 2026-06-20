@@ -1,8 +1,8 @@
 # NCEP/NCAR Reanalysis bindings.
 #
-# Currently supports `NCEP{SurfaceGauss}` — global daily surface-level
-# reanalysis on a Gaussian grid, available 1948-present. Each yearly file
-# (one per layer per year) contains 365 daily timesteps.
+# Currently supports `NCEP{SurfaceFlux}` — global surface-flux reanalysis on
+# the T62 Gaussian grid, available 1948-present. The native files are 6-hourly;
+# `_post_load_stack!` averages them to daily means for this daily path.
 #
 # Wind comes as U/V components (`:uwnd_10m`, `:vwnd_10m`), so the chain's
 # `derive!(:wind_speed)` step combines them into a scalar speed.
@@ -16,13 +16,26 @@
 # derivation from `:dswrf`.
 
 temporal_resolution(::Type{<:NCEP}) = DailyResolution()
-weather_loader(::Type{<:NCEP{SurfaceGauss}}) = YearlyTimeSeries()
+weather_loader(::Type{<:NCEP{SurfaceFlux}}) = YearlyTimeSeries()
 
-# NCEP getraster requires a `dataset` kwarg ("reanalysis" or "reanalysis2");
-# we use the Reanalysis 1 archive throughout.
-_extra_getraster_kwargs(::Type{<:NCEP}) = (; dataset = "reanalysis")
+# NCEP{SurfaceFlux} is natively 6-hourly (1460 steps/year). Average any layer
+# whose Ti length exceeds the expected 365 × nyears to daily means before the
+# canonical pipeline sees the data.
+function _post_load_stack!(::Type{<:NCEP{SurfaceFlux}}, stack, nyears)
+    expected = 365 * nyears
+    names = keys(stack)
+    layers = map(names) do name
+        layer = getproperty(stack, name)
+        n = size(layer, Ti)
+        n == expected && return layer
+        n % expected == 0 || error(
+            "NCEP layer $name: Ti length $n is not a multiple of expected $expected")
+        return _aggregate_ti_to_daily(layer, n ÷ expected)
+    end
+    return RasterStack(NamedTuple{names}(layers))
+end
 
-function weather_variables(::Type{<:NCEP{SurfaceGauss}})
+function weather_variables(::Type{<:NCEP{SurfaceFlux}})
     (
         WeatherVariable(:maximum_temperature, :tmax, u"K"),
         WeatherVariable(:minimum_temperature, :tmin, u"K"),

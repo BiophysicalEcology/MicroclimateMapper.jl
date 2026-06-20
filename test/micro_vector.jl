@@ -5,6 +5,7 @@ using MicroclimateMapper: _make_points_dim, _points_extent,
     _to_points, _to_points_constant, _to_points_with_time,
     _stack_to_points
 using Microclimate: example_microclimate_problem, example_soil_profile
+using RasterDataSources
 using Rasters
 using Rasters: X, Y, Ti, Near
 using Rasters.DimensionalData: Dim, MergedLookup, hasdim

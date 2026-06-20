@@ -8,11 +8,11 @@ This example mirrors `vector_demo.jl` in
 [MicroclimateTalk](https://github.com/BiophysicalEcology/MicroclimateTalk),
 shortened to a winter window so it stays fast for documentation builds.
 
-```@setup vector
+<!-- @setup vector
 include(joinpath(@__DIR__, "..", "plotting.jl"))
-```
+-->
 
-```@example vector
+```julia
 using MicroclimateMapper
 using Microclimate
 using Microclimate: example_soil_profile,
@@ -43,7 +43,7 @@ model = MicroMapModel(;
         snow_model            = SnowModel(),
     ),
     dem_source              = SRTM,
-    weather_source          = NCEP{SurfaceGauss},
+    weather_source          = NCEP,
     surface_albedo_source   = 0.15,
     roughness_height_source = 0.004u"m",
 )
@@ -60,7 +60,6 @@ problem = MicroVectorProblem(;
 )
 
 output = solve(problem)
-nothing # hide
 ```
 
 The result is a `RasterStack` whose `point` dimension is a `MergedLookup`
@@ -71,7 +70,7 @@ soil/air variables) `depth` / `height` gives per-site time series.
 
 One line per site, noon samples across the run window.
 
-```@example vector
+```julia
 plot_vector_snow_depth(output,
     ["Valley (900 m)", "South slope (1200 m)", "Summit (1567 m)"])
 ```
