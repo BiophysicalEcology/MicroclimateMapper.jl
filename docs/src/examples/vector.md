@@ -43,7 +43,7 @@ model = MicroMapModel(;
         snow_model            = SnowModel(),
     ),
     dem_source              = SRTM,
-    weather_source          = NCEPHourly,
+    weather_source          = NCEP,
     surface_albedo_source   = 0.15,
     roughness_height_source = 0.004u"m",
 )

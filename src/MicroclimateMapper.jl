@@ -44,7 +44,7 @@ export
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
     # Weather sources
-    NCEPHourly,
+    NCEP,
     # Microclimate drivers
     MicroMapModel,
     MicroRasterProblem,

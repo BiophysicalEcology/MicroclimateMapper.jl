@@ -103,7 +103,7 @@ struct HourlyResolution <: TemporalResolution end
     SixHourlyResolution
 
 Native 6-hourly files (4 × 365 = 1460 steps/year) interpolated to 8760 hourly
-output steps/year before the solver sees the data. Used by `NCEPHourly`. Like
+output steps/year before the solver sees the data. Used by `NCEP`. Like
 `HourlyResolution`, skips the min/max envelope and runs in consecutive-day mode.
 
 Future sub-daily sources (3-hourly MERRA-2, 12-hourly GFS, etc.) follow the
@@ -620,7 +620,7 @@ const _DERIVATIONS_HOURLY = (
     Val(:deep_soil_temperature_from_hourly), # annual mean of hourly T
 )
 
-# Sub-daily (6-hourly) chain — for sources like NCEPHourly that provide
+# Sub-daily (6-hourly) chain — for sources like NCEP that provide
 # 6-hourly values that must be interpolated/disaggregated to hourly.
 #
 #  1. :solar_geometry          — populate scratch.solar.out with hourly clear-sky
@@ -944,7 +944,7 @@ end
 # struct's `pressure` field is a `Fill` derived from site elevation —
 # rebuild and swap in. In hourly/sub-daily mode the pressure array is either
 # loaded natively (ERA5 `:sp`) or interpolated from 6h staging buffers
-# (NCEPHourly `surface_pressure_6h → pressure`), and must NOT be overwritten.
+# (NCEP `surface_pressure_6h → pressure`), and must NOT be overwritten.
 #
 # The guard is `environment_minmax === nothing`: that flag is set exclusively
 # by hourly/sub-daily allocators, so it unambiguously identifies modes where
