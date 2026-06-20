@@ -129,6 +129,31 @@ end
 @inline _sky_view_from_horizon(horizon_angles) =
     sum(h -> cos(h)^2, horizon_angles) / length(horizon_angles)
 
+# Flat-terrain stack: same structure as compute_terrain_grids but with
+# slope = aspect = horizon = 0. Use when terrain computation is disabled
+# (compute_terrain = false on MicroMapModel) — elevation is still loaded
+# from the DEM so lapse rate correction and atmospheric pressure are correct.
+function _flat_terrain_stack(dem::Raster, n_horizon_angles::Int)
+    can = _canonicalize(dem)
+    elevation = Raster(Float64.(parent(can)), dims(can); crs = crs(can),
+                       missingval = nothing) .* u"m"
+    longitude = first.(DimPoints(elevation)) .* u"°"
+    latitude  = last.(DimPoints(elevation))  .* u"°"
+    slope     = zero(latitude)
+    aspect    = zero(latitude)
+    pressure  = atmospheric_pressure.(elevation)
+
+    T_ang = typeof(0.0u"°")
+    zero_sv = SVector{n_horizon_angles, T_ang}(ntuple(_ -> zero(T_ang), n_horizon_angles))
+    horizon_angles = Raster(fill(zero_sv, size(elevation)...), dims(elevation);
+                            crs = crs(elevation))
+
+    return RasterStack((;
+        elevation, slope, aspect, latitude, longitude,
+        atmospheric_pressure = pressure, horizon_angles,
+    ))
+end
+
 # Canonicalise a Raster to `(X, Y)` dim order with both axes ascending.
 function _canonicalize(r::Raster)
     r2 = dimnum(r, X) > dimnum(r, Y) ? permutedims(r, (X, Y)) : r
