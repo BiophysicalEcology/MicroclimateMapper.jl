@@ -1,12 +1,12 @@
 # CRUCL2 — CRU CL 2.0 monthly mean climate, 10-minute resolution, 1961–1990.
 #
 # Single NetCDF `cru_cl2.nc` with a `month` dimension (1–12) for all variables.
-# Uses SingleFileClimatology loader — no per-field file selection needed.
+# Uses SingleFileBands loader — no per-field file selection needed.
 # tmax/tmin and vapr require two-input derivations (WeatherVariable.transform
 # only handles one field), so they are computed in _post_load_stack!.
 # temporal_resolution defaults to MonthlyResolution().
 
-weather_loader(::Type{CRUCL2}) = SingleFileClimatology()
+weather_loader(::Type{CRUCL2}) = SingleFileBands()
 
 # Primary fields to load from the single NetCDF. :tmp, :dtr, :reh are
 # intermediate inputs for the two-input derivations in _post_load_stack!
@@ -32,7 +32,7 @@ weather_grid_elevation(::Type{CRUCL2}, weather, I) =
     Float64(weather[:elv][I..., Ti(1)]) * u"m"
 
 # Compute tmax, tmin, vapr from the raw intermediate fields loaded by
-# SingleFileClimatology, then rebuild the stack with only the canonical
+# SingleFileBands, then rebuild the stack with only the canonical
 # native fields (removing :tmp, :dtr, :reh).
 function _post_load_stack!(::Type{CRUCL2}, stack, _)
     ti = dims(stack[:tmp], Ti)

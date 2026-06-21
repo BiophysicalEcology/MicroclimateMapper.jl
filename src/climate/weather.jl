@@ -312,14 +312,15 @@ WorldClim{Future{Climate}}. `getraster(source, name; date = future_date)`.
 struct MultiBandFutureClimatology <: WeatherLoader end
 
 """
-    SingleFileClimatology
+    SingleFileBands
 
-A fixed 12-month climatology stored in one file containing all variables.
+All variables stored as named bands in one file.
 `getraster(source)` (no per-field argument) returns the file path; all
-`fields` are extracted from it simultaneously as a `RasterStack` and tiled
-to `12 * nyears`. Used by CRUCL2.
+`fields` are extracted simultaneously as a `RasterStack`. The native time
+dimension (however many steps the file contains) is tiled `nyears` times.
+Used by CRUCL2 (12 monthly steps); works equally for other step counts.
 """
-struct SingleFileClimatology <: WeatherLoader end
+struct SingleFileBands <: WeatherLoader end
 
 """
     DailyFiles
@@ -347,7 +348,7 @@ struct HourlyZarrStore <: WeatherLoader end
 
 Singleton declaring how this source's files are organised. One of
 `YearlyTimeSeries`, `MonthlyClimatology`, `FutureMonthlyClimatology`,
-`MultiBandFutureClimatology`, `SingleFileClimatology`.
+`MultiBandFutureClimatology`, `SingleFileBands`.
 """
 function weather_loader end
 
@@ -511,17 +512,16 @@ function _load_layers(::MultiBandFutureClimatology, source, fields::Tuple,
     return NamedTuple{fields}(layers)
 end
 
-function _load_layers(::SingleFileClimatology, source, fields::Tuple, area::Extent, years)
+function _load_layers(::SingleFileBands, source, fields::Tuple, area::Extent, years)
     nyears = length(years)
     path = getraster(source)
     raw = read(crop(RasterStack(path; name = fields, lazy = true); to = area, touches = true))
     layers = map(fields) do name
         lyr = raw[name]
         data = parent(lyr)
-        size(data, 3) == 12 || error(
-            "$source: expected 12 months in layer :$name, got $(size(data, 3))")
+        nsteps = size(data, 3)
         tiled = nyears == 1 ? data : repeat(data; outer = (1, 1, nyears))
-        Raster(tiled, (dims(lyr)[1:2]..., Ti(1:(12 * nyears))); crs = crs(lyr))
+        Raster(tiled, (dims(lyr)[1:2]..., Ti(1:(nsteps * nyears))); crs = crs(lyr))
     end
     return NamedTuple{fields}(layers)
 end
