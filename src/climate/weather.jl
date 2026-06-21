@@ -516,12 +516,21 @@ function _load_layers(::SingleFileBands, source, fields::Tuple, area::Extent, ye
     nyears = length(years)
     path = getraster(source)
     raw = read(crop(RasterStack(path; name = fields, lazy = true); to = area, touches = true))
+    # Infer native step count from the first 3-D layer (some layers, e.g. CRUCL2 :elv, are static 2-D).
+    nsteps = 1
+    for name in fields
+        ndims(raw[name]) >= 3 && (nsteps = size(parent(raw[name]), 3); break)
+    end
+    ntotal = nsteps * nyears
     layers = map(fields) do name
-        lyr = raw[name]
+        lyr  = raw[name]
         data = parent(lyr)
-        nsteps = size(data, 3)
-        tiled = nyears == 1 ? data : repeat(data; outer = (1, 1, nyears))
-        Raster(tiled, (dims(lyr)[1:2]..., Ti(1:(nsteps * nyears))); crs = crs(lyr))
+        tiled = if ndims(data) == 2
+            repeat(reshape(data, size(data)..., 1); outer = (1, 1, ntotal))
+        else
+            nyears == 1 ? data : repeat(data; outer = (1, 1, nyears))
+        end
+        Raster(tiled, (dims(lyr)[1:2]..., Ti(1:ntotal)); crs = crs(lyr))
     end
     return NamedTuple{fields}(layers)
 end
