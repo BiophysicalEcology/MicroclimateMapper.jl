@@ -194,7 +194,14 @@ worker-cache pool, and prepare for `solve!`.
 function CommonSolve.init(problem::MicroRasterProblem)
     (; model, area, dates, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
-       surface_albedo_source, roughness_height_source) = model
+       surface_albedo_source, roughness_height_source, soil_moisture_source) = model
+
+    # Inject soil_moisture_source into data before canonical-override resolution,
+    # unless the user already supplied data.soil_moisture explicitly.
+    if soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
+        data = merge(data, (; soil_moisture = _load_soil_moisture(
+            soil_moisture_source, _to_extent(area), _years_from_dates(dates))))
+    end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
