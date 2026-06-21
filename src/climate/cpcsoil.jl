@@ -36,9 +36,7 @@ function load_cpcsoil(area::Extent, years; period = "1991-2020")
         raw = Raster(parent(raw), (X(new_x), dims(raw, Y), dims(raw, Ti)); crs = crs(raw))
     end
 
-    # Native unit: mm of soil water per 1 m column. Divide by 1 m to get
-    # dimensionless volumetric fraction (m³/m³): 1 mm / 1 m = 10⁻³ m³/m³.
-    data_m3 = ustrip.(u"m^3/m^3", parent(raw) .* u"mm" ./ 1u"m")
+    data_m3 = parent(raw) ./ 1000.0   # mm water per 1 m soil column → m³/m³
     tiled   = nyears == 1 ? data_m3 : repeat(data_m3; outer = (1, 1, nyears))
 
     return Raster(tiled, (dims(raw)[1:2]..., Ti(1:(12 * nyears))); crs = crs(raw))
