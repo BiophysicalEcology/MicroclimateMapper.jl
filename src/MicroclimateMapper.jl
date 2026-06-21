@@ -56,7 +56,14 @@ export
     reinit!,
     canonical_unit,
     strip_to_canonical,
-    load_cpcsoil
+    load_cpcsoil,
+    terrain,
+    # Solar output
+    SolarOutputLayer,
+    SOLAR_BROADBAND,
+    SOLAR_PAR,
+    SOLAR_UVB,
+    SOLAR_NIR
 
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
@@ -78,6 +85,7 @@ include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
 include("common.jl")
+include("solar/solar_output.jl")
 include("raster.jl")
 include("vector.jl")
 

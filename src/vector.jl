@@ -174,14 +174,16 @@ function CommonSolve.init(problem::MicroVectorProblem)
 
     # Inject soil_moisture_source into data before canonical-override resolution,
     # unless the user already supplied data.soil_moisture explicitly.
-    if soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
+    # Skipped in solar-only mode — weather is not loaded (or is irrelevant).
+    if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
         sm_area = Extents.buffer(_points_extent(points),
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
         data = merge(data, (; soil_moisture = _load_soil_moisture(soil_moisture_source, sm_area, years)))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
-    soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+    soil_moisture_available = model.solar_only ? false :
+        _has_canonical_input(:soil_moisture, weather_source, data)
     resolution = temporal_resolution(weather_source)
     ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
     anchor_dates = _step_anchor_dates(resolution, dates_vec)
@@ -196,28 +198,37 @@ function CommonSolve.init(problem::MicroVectorProblem)
     area = _points_extent(points)
     points_dim = _make_points_dim(points)
 
+    # Terrain: reuse pre-computed terrain when `data.terrain` is supplied
+    # (skips DEM download and horizon-angle sweep). The override must already
+    # be per-point (i.e. from a previous `MicroVectorProblem` cache's `terrain`
+    # field) — no per-point extraction is performed on it.
+    terrain = if haskey(data, :terrain)
+        data.terrain
+    else
+        dem_native = _resolve_dem(data, dem_source, area)
+        terrain_native = model.compute_terrain ?
+            compute_terrain_grids(dem_native; template = nothing, n_horizon_angles = N_HORIZON_ANGLES) :
+            _flat_terrain_stack(dem_native, N_HORIZON_ANGLES)
+        _stack_to_points(terrain_native, points_dim)
+    end
+
     # Weather: load at native resolution over the points' bounding extent,
     # buffered so the crop is non-empty even when (a) the points' bbox is
     # degenerate (single point or co-located points) or (b) the weather
     # source uses `Points`-sampling on a coarse grid where `touches=true`
     # would otherwise return zero cells (e.g. NCEP ~2° Gaussian).
-    # DEM: `_load_dem` adds its own buffer (e.g. 0.3° for SRTM) so horizon
-    # ray sweeps have room. Terrain is computed at native DEM resolution
-    # (template = nothing) — slope / aspect / horizon vectors carry full
-    # relief; per-point Near extraction picks the value at each point.
-    weather_area = Extents.buffer(area,
-        (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
-    weather_native = _resolve_weather(data, weather_source, weather_area, years)
-    # Slice to the requested date range before per-point extraction —
-    # positional Ti indexing works for both integer and DateTime Ti axes.
-    weather_native = weather_native[Ti(ti_start:ti_end)]
-    dem_native = _resolve_dem(data, dem_source, area)
-    terrain_native = model.compute_terrain ?
-        compute_terrain_grids(dem_native; template = nothing, n_horizon_angles = N_HORIZON_ANGLES) :
-        _flat_terrain_stack(dem_native, N_HORIZON_ANGLES)
-
-    weather = _stack_to_points(weather_native, points_dim)
-    terrain = _stack_to_points(terrain_native, points_dim)
+    # Skip entirely in clear-sky solar-only mode; load when cloud_correct_solar
+    # needs cloud cover. Terrain must be resolved first (above) regardless.
+    weather = if model.solar_only && !model.cloud_correct_solar
+        RasterStack()
+    else
+        weather_area = Extents.buffer(area,
+            (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+        # Slice to the requested date range before per-point extraction —
+        # positional Ti indexing works for both integer and DateTime Ti axes.
+        weather_native = _resolve_weather(data, weather_source, weather_area, years)
+        _stack_to_points(weather_native[Ti(ti_start:ti_end)], points_dim)
+    end
 
     albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
@@ -229,6 +240,8 @@ function CommonSolve.init(problem::MicroVectorProblem)
     canonical_overrides = _extract_canonical_overrides(_canonical_data(data), points_dim)
 
     cloud_constants = _build_cloud_constants()
+    solar_pairs = _make_solar_pairs(
+        _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
@@ -239,7 +252,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, nothing, cache_pool,
-        (; init_inputs, build_inputs, anchor_dates),
+        (; init_inputs, build_inputs, anchor_dates, solar_pairs),
         cloud_constants,
     )
 end

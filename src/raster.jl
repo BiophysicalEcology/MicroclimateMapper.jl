@@ -198,13 +198,15 @@ function CommonSolve.init(problem::MicroRasterProblem)
 
     # Inject soil_moisture_source into data before canonical-override resolution,
     # unless the user already supplied data.soil_moisture explicitly.
-    if soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
+    # Skipped in solar-only mode — weather is not loaded at all.
+    if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
         data = merge(data, (; soil_moisture = _load_soil_moisture(
             soil_moisture_source, _to_extent(area), _years_from_dates(dates))))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
-    soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+    soil_moisture_available = model.solar_only ? false :
+        _has_canonical_input(:soil_moisture, weather_source, data)
 
     # Normalise the user-supplied dates: drop Feb 29, get a sorted Vector{Date}.
     dates_vec = _normalise_dates(dates)
@@ -213,49 +215,60 @@ function CommonSolve.init(problem::MicroRasterProblem)
     ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
     anchor_dates = _step_anchor_dates(resolution, dates_vec)
 
-    # Resolve the spatial template (Raster or RDS source loaded over
-    # `area`), then resample the native-resolution weather onto it so
-    # per-pixel `weather[I..., Ti(k)]` indexing matches the run grid.
-    # Terrain stays at the DEM's native resolution and is aggregated to
-    # the template inside `compute_terrain_grids`, so slope / aspect /
-    # horizon angles reflect fine-scale relief regardless of template.
-    # Weather is loaded over a buffered area so the cubic-spline kernel
-    # used by `_resample_weather_to_template` has source cells beyond
-    # the template edges; without the buffer the spline degenerates to
-    # nearest at the boundary.
     # `area` may be a geometry; loaders need an Extent, but the mask uses the geometry itself.
     extent = _to_extent(area)
-    buffer_deg = weather_area_buffer(weather_source)
-    weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
+
     @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
-    @info "init: DEM source:       $(dem_source)"
+    @info "init: DEM source:       $(haskey(data, :terrain) ? "skipped (terrain override)" : string(dem_source))"
     @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
     @info "init: roughness height: $(_source_label(roughness_height_source))"
-    @info "init: terrain:          $(model.compute_terrain ? "slope/aspect/horizon computed from DEM" : "flat (compute_terrain=false)")"
-    @info "init: loading weather..."
-    weather_full = _resolve_weather(data, weather_source, weather_area, years)
-    @info "init: loading DEM..."
-    dem_native = _resolve_dem(data, dem_source, extent)
+
     template_2d = _resolve_template(problem.template, extent)
-    @info "init: resampling weather to template..."
-    weather_full = _resample_weather_to_template(weather_full, template_2d)
-    @info "init: slicing weather to date range..."
-    # Slice the loaded (full-year) weather stack to the requested date range.
-    # Positional integer Ti indexing works for both integer Ti (most sources)
-    # and DateTime Ti (ERA5 Zarr). `stack[Ti(...)]` applies the slice to all
-    # layers simultaneously — unlike `map(f, stack)` which is pixel-wise.
-    weather = weather_full[Ti(ti_start:ti_end)]
-    template = first(values(weather))
-    @info "init: building terrain..."
-    terrain = if model.compute_terrain
-        compute_terrain_grids(dem_native; template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
+
+    # Terrain: use the pre-computed override when supplied (skips DEM download
+    # and the expensive horizon-angle sweep). Compute from scratch otherwise.
+    terrain = if haskey(data, :terrain)
+        @info "init: terrain:          reusing pre-computed terrain from data override"
+        data.terrain
     else
-        # No terrain computation: crop DEM to the template extent so terrain
-        # dims exactly match the weather grid (DEM was loaded with a buffer to
-        # support slope/aspect at boundaries — not needed here).
-        dem_at_template = Rasters.resample(dem_native; to = template_2d, method = :average)
-        _flat_terrain_stack(dem_at_template, N_HORIZON_ANGLES)
+        @info "init: terrain:          $(model.compute_terrain ? "slope/aspect/horizon computed from DEM" : "flat (compute_terrain=false)")"
+        @info "init: loading DEM..."
+        dem_native = _resolve_dem(data, dem_source, extent)
+        @info "init: building terrain..."
+        if model.compute_terrain
+            compute_terrain_grids(dem_native; template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
+        else
+            # No terrain computation: crop DEM to the template extent so terrain
+            # dims exactly match the run grid (DEM was loaded with a buffer to
+            # support slope/aspect at boundaries — not needed here).
+            dem_at_template = Rasters.resample(dem_native; to = template_2d, method = :average)
+            _flat_terrain_stack(dem_at_template, N_HORIZON_ANGLES)
+        end
     end
+
+    # In clear-sky solar-only mode skip weather loading entirely — terrain drives the
+    # extent and missing-pixel check. When cloud_correct_solar=true, weather is needed
+    # for the cloud cover field. In full mode, load, resample, and slice weather.
+    weather = if model.solar_only && !model.cloud_correct_solar
+        @info "init: solar-only mode — weather skipped"
+        RasterStack()
+    else
+        buffer_deg = weather_area_buffer(weather_source)
+        weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
+        @info "init: loading weather..."
+        wf = _resolve_weather(data, weather_source, weather_area, years)
+        @info "init: resampling weather to template..."
+        wf = _resample_weather_to_template(wf, template_2d)
+        @info "init: slicing weather to date range..."
+        # Positional integer Ti indexing works for both integer Ti (most sources)
+        # and DateTime Ti (ERA5 Zarr). `stack[Ti(...)]` applies the slice to all
+        # layers simultaneously — unlike `map(f, stack)` which is pixel-wise.
+        wf[Ti(ti_start:ti_end)]
+    end
+
+    # Surface-property resampling target: the sliced weather template in full mode
+    # (has the right grid after resample); template_2d in clear-sky solar-only mode.
+    template = (model.solar_only && !model.cloud_correct_solar) ? template_2d : first(values(weather))
     @info "init: building mask and surface grids..."
     mask = _build_area_mask(area, template_2d)
     let n_total = length(terrain.elevation),
@@ -273,6 +286,8 @@ function CommonSolve.init(problem::MicroRasterProblem)
     canonical_overrides = _resample_canonical_overrides(_canonical_data(data), template)
 
     cloud_constants = _build_cloud_constants()
+    solar_pairs = _make_solar_pairs(
+        _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
     @info "init: building cache pool..."
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
@@ -285,7 +300,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, mask, cache_pool,
-        (; init_inputs, build_inputs, anchor_dates),
+        (; init_inputs, build_inputs, anchor_dates, solar_pairs),
         cloud_constants,
     )
 end
