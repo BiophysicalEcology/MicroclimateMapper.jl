@@ -59,7 +59,9 @@ export
     reinit!,
     canonical_unit,
     strip_to_canonical,
-    geocode
+    geocode,
+    GeocodeResult,
+    load_template
 
 include("utils/geocode.jl")
 include("atmosphere/aerosol.jl")
