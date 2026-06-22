@@ -1,8 +1,10 @@
 module MicroclimateMapper
 
 using Dates
+using Downloads
 using Statistics: mean
 
+using JSON3
 using Unitful
 
 using Microclimate
@@ -55,8 +57,10 @@ export
     init,
     reinit!,
     canonical_unit,
-    strip_to_canonical
+    strip_to_canonical,
+    geocode
 
+include("utils/geocode.jl")
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
