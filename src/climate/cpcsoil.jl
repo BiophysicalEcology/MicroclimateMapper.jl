@@ -4,13 +4,19 @@
 # Intended for use alongside CRUCL2. Pass the result as `data.soil_moisture`
 # on a MicroRasterProblem or MicroVectorProblem.
 
+# 1 mm water column per 1 m soil depth = 10⁻³ m³/m³ (native CPCSoil unit).
+const _CPCSOIL_MM_TO_VOLUMETRIC = 1e-3
+
+weather_variables(::Type{CPCSoil}) = (
+    WeatherVariable(:soil_moisture, :soilw, 1, raw -> raw * _CPCSOIL_MM_TO_VOLUMETRIC),
+)
+
 """
     load_cpcsoil(area, years; period="1991-2020") -> Raster
 
 Load CPC Global Monthly Soil Moisture over `area`, tiled to `12 * length(years)`
 time steps matching a CRUCL2 weather stack. Returns a `(X, Y, Ti)` Raster in
-m³/m³ (converted from native mm storage). `period` is `"1991-2020"` (default)
-or `"1981-2010"`.
+m³/m³. `period` is `"1991-2020"` (default) or `"1981-2010"`.
 """
 _load_soil_moisture(::Type{CPCSoil}, area, years) = load_cpcsoil(area, years)
 
@@ -36,7 +42,10 @@ function load_cpcsoil(area::Extent, years; period = "1991-2020")
         raw = Raster(parent(raw), (X(new_x), dims(raw, Y), dims(raw, Ti)); crs = crs(raw))
     end
 
-    data_m3 = parent(raw) ./ 1000.0   # mm water per 1 m soil column → m³/m³
+    # Apply the declared transform (native mm/m → m³/m³), matching how
+    # _read_one_variable! would apply WeatherVariable.transform for a native source.
+    sm_transform = only(weather_variables(CPCSoil)).transform
+    data_m3 = sm_transform.(parent(raw))
     tiled   = nyears == 1 ? data_m3 : repeat(data_m3; outer = (1, 1, nyears))
 
     return Raster(tiled, (dims(raw)[1:2]..., Ti(1:(12 * nyears))); crs = crs(raw))
