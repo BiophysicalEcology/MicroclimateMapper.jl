@@ -5,6 +5,7 @@ using Downloads
 using Statistics: mean
 
 using JSON3
+using URIs
 using Unitful
 
 using Microclimate
