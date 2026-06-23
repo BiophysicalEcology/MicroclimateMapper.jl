@@ -167,13 +167,21 @@ worker-cache pool, and prepare for `solve!`. No resampling is performed.
 function CommonSolve.init(problem::MicroVectorProblem)
     (; model, points, dates, soil_profile, data) = problem
     (; dem_source, weather_source, landcover_source,
-       surface_albedo_source, roughness_height_source) = model
-
-    init_inputs = _resolve_init(problem.init, model.micro_model)
-    soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
+       surface_albedo_source, roughness_height_source, soil_moisture_source) = model
 
     dates_vec = _normalise_dates(dates)
     years = _years_from_dates(dates)
+
+    # Inject soil_moisture_source into data before canonical-override resolution,
+    # unless the user already supplied data.soil_moisture explicitly.
+    if soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
+        sm_area = Extents.buffer(_points_extent(points),
+            (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+        data = merge(data, (; soil_moisture = _load_soil_moisture(soil_moisture_source, sm_area, years)))
+    end
+
+    init_inputs = _resolve_init(problem.init, model.micro_model)
+    soil_moisture_available = _has_canonical_input(:soil_moisture, weather_source, data)
     resolution = temporal_resolution(weather_source)
     ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
     anchor_dates = _step_anchor_dates(resolution, dates_vec)

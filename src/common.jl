@@ -111,16 +111,21 @@ extents and time ranges — pair with a `MicroRasterProblem` (grid) or
     * a `Type{<:RasterDataSource}` (load a property raster directly)
 - `output_layers` — tuple of `LayerSpec`s controlling which output rasters
   are materialised
+- `soil_moisture_source` — optional soil moisture data-source type
+  (e.g. `CPCSoil`). Loaded automatically at `init` time and used as
+  time-varying prescribed soil moisture. Overridden by `data.soil_moisture`
+  if both are supplied.
 - `lapse_rate_model::LapseRate` — atmospheric lapse-rate model for
   elevation-correcting weather data
 """
-@kwdef struct MicroMapModel{MM,DS,WS,LCS,SAS,RHS,OL,LRT}
+@kwdef struct MicroMapModel{MM,DS,WS,LCS,SAS,RHS,SMS,OL,LRT}
     micro_model::MM
     dem_source::DS
     weather_source::WS
     landcover_source::LCS = nothing
     surface_albedo_source::SAS = nothing
     roughness_height_source::RHS = nothing
+    soil_moisture_source::SMS = nothing
     output_layers::OL = _DEFAULT_OUTPUT_LAYERS
     lapse_rate_model::LRT = EnvironmentalLapseRate()
     compute_terrain::Bool = true
@@ -229,21 +234,24 @@ _build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
 @inline _is_active(_I::Tuple, ::Nothing) = true
 @inline _is_active(I::Tuple, mask) = mask[I...]
 
-# Returns true when ANY weather layer is NaN at I — ocean, outside the land
-# mask, or a coastal pixel where cubic-spline resampling produced NaN.
-@inline function _is_missing_pixel(weather, I)
-    return any(values(weather)) do layer
+# Returns true when ANY weather layer or canonical override is NaN at I —
+# ocean, outside the land mask, or a coastal pixel where resampling produced NaN.
+@inline function _is_missing_pixel(weather, canonical_overrides, I)
+    any(values(weather)) do layer
         isnan(Float64(layer[I..., Ti(1)]))
+    end || any(values(canonical_overrides)) do layer
+        v = hasdim(layer, Ti) ? layer[I..., Ti(1)] : layer[I...]
+        isnan(Float64(v))
     end
 end
 
-_first_active_index(rast, ::Nothing, weather) = _first_nonmissing(DimIndices(rast), weather)
-function _first_active_index(rast, mask, weather)
-    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather)
+_first_active_index(rast, ::Nothing, weather, co) = _first_nonmissing(DimIndices(rast), weather, co)
+function _first_active_index(rast, mask, weather, co)
+    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather, co)
 end
-function _first_nonmissing(indices, weather)
+function _first_nonmissing(indices, weather, co)
     for I in indices
-        _is_missing_pixel(weather, I) || return I
+        _is_missing_pixel(weather, co, I) || return I
     end
     error("All pixels are masked or have missing weather data (ocean?).")
 end
@@ -343,6 +351,14 @@ end
 
 # Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
+# ---------------------------------------------------------------------------
+# Soil-moisture source loader
+# ---------------------------------------------------------------------------
+
+# Default: no soil_moisture_source → nothing (prescribed moisture must come
+# from weather source or data.soil_moisture override).
+_load_soil_moisture(::Nothing, _area, _years) = nothing
+
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
@@ -357,7 +373,8 @@ function _build_inputs_and_pool(;
 
     wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
     @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
-    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))"
+    sm_src = model.soil_moisture_source !== nothing ? " ($(model.soil_moisture_source))" : ""
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
     @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
     @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
     @info "model: threads:         $(Threads.nthreads())"
@@ -420,7 +437,7 @@ function _build_inputs_and_pool(;
     end
 
     npixels = length(terrain.elevation)
-    first_I = _first_active_index(terrain.elevation, nothing, weather)
+    first_I = _first_active_index(terrain.elevation, nothing, weather, canonical_overrides)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
          scratch)
@@ -495,7 +512,7 @@ function _solve_proto_pixel!(cache)
     proto   = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
         _is_active(I, mask)       || continue
-        _is_missing_pixel(weather, I) && continue
+        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
         reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
         try
             solve!(proto.micro)
@@ -522,7 +539,7 @@ function _solve_remaining!(output, cache, proto, first_I)
     for I in pixel_indices
         I == first_I && continue
         _is_active(I, mask) || continue
-        _is_missing_pixel(weather, I) && continue
+        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
         put!(work, I)
         nwork += 1
     end
