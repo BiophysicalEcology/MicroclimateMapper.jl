@@ -68,6 +68,7 @@ MicroRasterProblem(model::MicroMapModel; kwargs...) =
 # Grid-mode spatial extractors
 # ---------------------------------------------------------------------------
 
+
 # Resample a native-resolution surface property onto the grid template.
 # Scalar / Raster cases are handled here; the landcover-weighted path runs
 # `_resolve_surface_native` first to compute a native Raster, then passes
@@ -134,26 +135,27 @@ weather_area_buffer(::Type{<:NCEP}) = 4.0
 # stepping in blocks aligned to the coarse weather grid (GDAL's default
 # is nearest, which would produce visible block artifacts).
 function _resample_weather_to_template(weather::RasterStack, template_2d)
-    target_crs = crs(template_2d)
+    # GDAL requires (1) a CRS and (2) Sampled{Regular, Intervals(Center())} lookups
+    # to compute a valid affine geotransform. Both conditions may be missing for
+    # NetCDF-derived data (e.g. CRUCL2 has no embedded CRS; NCEP has Irregular Y).
+    # Regularise both template and each source layer before warping.
+    warp_crs     = something(crs(template_2d), EPSG(4326))
+    eff_template = _regularise_for_resample(template_2d, warp_crs)
     names = keys(weather)
     resampled = map(names) do n
-        layer = _regularise_for_resample(getproperty(weather, n), target_crs)
-        Rasters.resample(layer; to = template_2d, method = :cubicspline)
+        @info "  resampling layer :$n"
+        layer = _regularise_for_resample(getproperty(weather, n), warp_crs)
+        read(Rasters.resample(layer; to = eff_template, method = :cubicspline))
     end
     return RasterStack(NamedTuple{names}(resampled))
 end
 
-# GDAL's resample backend needs a `Projected` lookup it can warp from, but
-# Gaussian-grid sources (NCEP) come in as `Mapped` with `Irregular` Y
-# bounds, which `convertlookup(::Projected, ::Mapped{Irregular})` can't
-# materialise. Locally — over the buffered template extent — Gaussian
-# spacing is uniform enough that rebuilding Y as a `Regular`-span
-# `Sampled` lookup at the mean step gives identical interpolation
-# results. We also rebuild X as plain `Sampled`+target CRS in the same
-# pass so neither axis goes through the `Mapped`→`Projected` reproject
-# path (which would otherwise require loading Proj).
+# Rebuild X and Y to Sampled{Regular, Intervals(Center())} and stamp `target_crs`
+# so GDAL can always compute a valid affine geotransform.  Applied to both source
+# and template layers in `_resample_weather_to_template`.  The rebuild is metadata-
+# only (no data copy); `_regular_sampled` reconstructs the same spacing from the
+# existing coordinate values.
 function _regularise_for_resample(layer::AbstractRaster, target_crs)
-    _is_irregular(lookup(layer, Y)) || return layer
     new_x = _regular_sampled(lookup(layer, X))
     new_y = _regular_sampled(lookup(layer, Y))
     return setcrs(Rasters.set(layer, X => new_x, Y => new_y), target_crs)
@@ -218,20 +220,41 @@ function CommonSolve.init(problem::MicroRasterProblem)
     extent = _to_extent(area)
     buffer_deg = weather_area_buffer(weather_source)
     weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
+    @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
+    @info "init: DEM source:       $(dem_source)"
+    @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
+    @info "init: roughness height: $(_source_label(roughness_height_source))"
+    @info "init: terrain:          $(model.compute_terrain ? "slope/aspect/horizon computed from DEM" : "flat (compute_terrain=false)")"
+    @info "init: loading weather..."
     weather_full = _resolve_weather(data, weather_source, weather_area, years)
+    @info "init: loading DEM..."
     dem_native = _resolve_dem(data, dem_source, extent)
     template_2d = _resolve_template(problem.template, extent)
+    @info "init: resampling weather to template..."
     weather_full = _resample_weather_to_template(weather_full, template_2d)
+    @info "init: slicing weather to date range..."
     # Slice the loaded (full-year) weather stack to the requested date range.
     # Positional integer Ti indexing works for both integer Ti (most sources)
     # and DateTime Ti (ERA5 Zarr). `stack[Ti(...)]` applies the slice to all
     # layers simultaneously — unlike `map(f, stack)` which is pixel-wise.
     weather = weather_full[Ti(ti_start:ti_end)]
     template = first(values(weather))
-    terrain = compute_terrain_grids(dem_native;
-        template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
-
+    @info "init: building terrain..."
+    terrain = if model.compute_terrain
+        compute_terrain_grids(dem_native; template = template_2d, n_horizon_angles = N_HORIZON_ANGLES)
+    else
+        # No terrain computation: crop DEM to the template extent so terrain
+        # dims exactly match the weather grid (DEM was loaded with a buffer to
+        # support slope/aspect at boundaries — not needed here).
+        dem_at_template = Rasters.resample(dem_native; to = template_2d, method = :average)
+        _flat_terrain_stack(dem_at_template, N_HORIZON_ANGLES)
+    end
+    @info "init: building mask and surface grids..."
     mask = _build_area_mask(area, template_2d)
+    let n_total = length(terrain.elevation),
+        n_active = mask === nothing ? n_total : count(mask)
+        @info "init: pixels:          $(n_active) active / $(n_total) total"
+    end
 
     albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
@@ -243,12 +266,14 @@ function CommonSolve.init(problem::MicroRasterProblem)
     canonical_overrides = _resample_canonical_overrides(_canonical_data(data), template)
 
     cloud_constants = _build_cloud_constants()
+    @info "init: building cache pool..."
     build_inputs, cache_pool = _build_inputs_and_pool(;
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
         soil_profile,
     )
+    @info "init: done"
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
