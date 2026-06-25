@@ -22,11 +22,11 @@ function weather_variables(::Type{<:CHELSA{Climate}})
         WeatherVariable(:rainfall, :pr, u"kg/m^2"),
         # CHELSA gives a single mean RH — use it for both reference_humidity
         # min and max so the VPD-based derivation is skipped on both ends.
-        WeatherVariable(:reference_humidity_min, :hurs, 1, _chelsa_percent_to_fraction),
-        WeatherVariable(:reference_humidity_max, :hurs, 1, _chelsa_percent_to_fraction),
+        WeatherVariable(:reference_humidity_min, :hurs, 1, percent_to_fraction),
+        WeatherVariable(:reference_humidity_max, :hurs, 1, percent_to_fraction),
         # `cloud_cover` is native, so the radiation-based cloud derivation
         # is skipped; cloud_min/max derivations still fire from this value.
-        WeatherVariable(:cloud_cover, :clt, 1, _chelsa_percent_to_fraction),
+        WeatherVariable(:cloud_cover, :clt, 1, percent_to_fraction),
     )
 end
 
@@ -48,9 +48,9 @@ function weather_variables(::Type{<:CHELSA{<:Future{Climate}}})
         # Fallback fields from the CHELSA{Climate} 1981-2010 baseline:
         WeatherVariable(:wind_speed, :sfcWind, u"m/s"),
         WeatherVariable(:downward_shortwave_radiation, :rsds, u"W/m^2"),
-        WeatherVariable(:reference_humidity_min, :hurs, 1, _chelsa_percent_to_fraction),
-        WeatherVariable(:reference_humidity_max, :hurs, 1, _chelsa_percent_to_fraction),
-        WeatherVariable(:cloud_cover, :clt, 1, _chelsa_percent_to_fraction),
+        WeatherVariable(:reference_humidity_min, :hurs, 1, percent_to_fraction),
+        WeatherVariable(:reference_humidity_max, :hurs, 1, percent_to_fraction),
+        WeatherVariable(:cloud_cover, :clt, 1, percent_to_fraction),
     )
 end
 
@@ -60,4 +60,4 @@ end
 
 # CHELSA stores percentages 0-100 for `:hurs` and `:clt`; the env structs
 # want [0, 1] fractions.
-_chelsa_percent_to_fraction(raw) = raw / 100.0
+percent_to_fraction(raw) = raw / 100.0

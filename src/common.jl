@@ -350,7 +350,7 @@ function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
     init_inputs, soil_moisture_available, years, days, cloud_constants,
-    soil_profile,
+    soil_profile, target_timestep::Timestep = Hourly(),
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
@@ -362,19 +362,18 @@ function _build_inputs_and_pool(;
     @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
     @info "model: threads:         $(Threads.nthreads())"
 
-    resolution = temporal_resolution(weather_source)
+    calendar = weather_calendar(weather_source)
     # `solar_ndays` is the number of distinct solar-geometry days per year —
-    # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
-    # scratch.solar.out sizing. Using steps_per_year here would over-allocate
-    # for HourlyResolution (8760 × 24 entries instead of 365 × 24).
-    solar_ndays = _solar_ndays_per_year(resolution) * length(years)
-    time_mode = _time_mode(resolution)
+    # 365 for the Daily calendar, 12 for Monthly. This drives scratch.solar.out
+    # sizing (one entry per day × 24 hours), independent of timestep.
+    solar_ndays = _solar_ndays_per_year(calendar) * length(years)
+    time_mode = _time_mode(calendar)
     nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
-    # `days` is the doy vector: one per unique day (daily/hourly) or one per
-    # selected month (monthly). Solar radiation is computed for each entry × 24 hours.
+    # `days` is the doy vector: one per unique day (Daily) or one per selected
+    # month (Monthly). Solar radiation is computed for each entry × 24 hours.
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, length(years)),
+        weather = allocate_weather_buffers(weather_source, target_timestep, length(years)),
         solar = (;
             out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),
@@ -400,7 +399,8 @@ function _build_inputs_and_pool(;
         env = assemble_weather!(scratch, weather, weather_source, site, I;
             vapour_pressure_method, lapse_rate_model, canonical_overrides,
             grid_elevation = isnothing(ge) ? site.elevation : ge,
-            wind_reference_height = maximum(micro_model.heights))
+            wind_reference_height = maximum(micro_model.heights),
+            target_timestep)
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
             soil_moisture_available, micro_model.depths,

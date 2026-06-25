@@ -9,7 +9,7 @@
 # need a multi-input merge step we don't yet have). The afternoon value
 # is left unused.
 
-temporal_resolution(::Type{<:AWAP}) = DailyResolution()
+weather_calendar(::Type{<:AWAP}) = Daily()
 weather_loader(::Type{<:AWAP}) = DailyFiles()
 
 function weather_variables(::Type{<:AWAP})

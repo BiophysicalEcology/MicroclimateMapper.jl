@@ -47,218 +47,103 @@ WeatherVariable(name::Symbol, field::Symbol, unit = 1, transform = identity) =
     weather_variables(::Type{<:RasterDataSource}) -> Tuple{WeatherVariable, …}
 
 Tuple of `WeatherVariable`s declaring which canonical physical variables
-the source natively provides. The set of derivations that run is
-`weather_derivations(source)` minus those whose output appears in this
-native set.
+the source natively provides. A physics derivation runs only if its output
+is not already in this native set (`_is_native`).
 """
 function weather_variables end
 
 # ---------------------------------------------------------------------------
-# Temporal-resolution trait
+# Time: two orthogonal dials — calendar and timestep
 # ---------------------------------------------------------------------------
+#
+# A run's time is two independent choices, never one ladder:
+#
+#   * calendar — which days we run. A month is either one representative
+#     day (`Monthly`) or all of its days (`Daily`). This is the long
+#     accounting axis.
+#   * timestep — the step *within* a day. Either a per-step min/max envelope
+#     the solver expands into a diel curve (`MinMax`), or `N` evenly spaced
+#     samples per day (`SubDaily{N}` — hourly is `SubDaily{24}`, six-hourly
+#     `SubDaily{4}`). This is the sub-daily axis.
+#
+# They do not trade off: hourly runs inside each day whether the month
+# contributes one day or thirty. A source declares the calendar it covers
+# (`weather_calendar`) and the timestep its data arrives at (`native_timestep`).
+# The run declares the timestep it wants out (the target, default hourly).
+# Moving a quantity between timesteps is `resample!`, driven by each
+# quantity's own `resampling_rule` — never by which source it came from.
+
+abstract type Calendar end
 
 """
-    TemporalResolution
+    Monthly
 
-Singleton trait describing the time step a source provides — currently
-monthly (12 timesteps per year) or daily (365 timesteps per year). Drives
-both the size of every per-pixel buffer and which env-minmax struct gets
-built (`MonthlyMinMaxEnvironment` vs `DailyMinMaxEnvironment`).
+12 representative mid-month days per simulated year. Used by TerraClimate,
+CHELSA, WorldClim. Picks `MonthlyMinMaxEnvironment`, `Microclimate.DEFAULT_DAYS`
+for solar geometry, and non-consecutive-day mode (each month an independent
+representative day).
 """
-abstract type TemporalResolution end
-
-"""
-    MonthlyResolution
-
-12 timesteps per simulated year. Used by TerraClimate, CHELSA, WorldClim.
-Picks `MonthlyMinMaxEnvironment` and `Microclimate.DEFAULT_DAYS` (12 mid-month
-days of year) for solar geometry.
-"""
-struct MonthlyResolution <: TemporalResolution end
+struct Monthly <: Calendar end
 
 """
-    DailyResolution
+    Daily
 
-365 timesteps per simulated year (leap days dropped for now). Used by
-daily sources such as NCEP, AWAP, ERA5 daily aggregates. Picks
-`DailyMinMaxEnvironment` and `1:365` for solar geometry — the solver then
-runs in consecutive-day mode (each day inherits soil state from the
-previous, see `DailyMinMaxEnvironment` docstring in Microclimate).
+Every day, 365 per simulated year (Feb 29 dropped). Used by daily and
+sub-daily sources (NCEP, AWAP, ERA5, GRIDMET). Picks `DailyMinMaxEnvironment`
+(in `MinMax` timestep), `1:365` for solar geometry, and consecutive-day mode
+(each day inherits soil state from the previous).
 """
-struct DailyResolution <: TemporalResolution end
+struct Daily <: Calendar end
 
-"""
-    HourlyResolution
-
-8760 timesteps per simulated year (24 × 365; leap-day Feb 29 dropped to
-keep year boundaries clean). Used by hourly sources such as ERA5. Skips
-the min/max envelope entirely (`environment_minmax = nothing`) — hourly
-values flow straight into `environment_hourly`. `environment_daily`
-arrays remain at 365 entries per year and are filled by aggregating the
-hourly canonical buffers.
-"""
-struct HourlyResolution <: TemporalResolution end
+abstract type Timestep end
 
 """
-    SixHourlyResolution
+    MinMax
 
-Native 6-hourly files (4 × 365 = 1460 steps/year) interpolated to 8760 hourly
-output steps/year before the solver sees the data. Used by `NCEP`. Like
-`HourlyResolution`, skips the min/max envelope and runs in consecutive-day mode.
-
-Future sub-daily sources (3-hourly MERRA-2, 12-hourly GFS, etc.) follow the
-same pattern — declare their own `ThreeHourlyResolution` etc. with the matching
-`_native_steps_per_year` and buffer/derivation-chain dispatches.
+The source provides a per-step min/max envelope and no within-day samples;
+the solver synthesises the diel curve. Used by monthly/daily sources.
 """
-struct SixHourlyResolution <: TemporalResolution end
+struct MinMax <: Timestep end
 
 """
-    temporal_resolution(::Type{<:RasterDataSource}) -> TemporalResolution
+    SubDaily{N}
 
-The time step a source's `_load_weather` produces. Default
-`MonthlyResolution()`; daily/hourly sources must override.
+`N` evenly spaced samples within each day. `Hourly == SubDaily{24}`,
+`SixHourly == SubDaily{4}`. A quantity moves between sub-daily timesteps (and
+to/from a day total) generically via `resample!` and its `resampling_rule`.
 """
-@inline temporal_resolution(::Type) = MonthlyResolution()
+struct SubDaily{N} <: Timestep end
+const Hourly = SubDaily{24}
+const SixHourly = SubDaily{4}
 
-@inline steps_per_year(::MonthlyResolution) = 12
-@inline steps_per_year(::DailyResolution) = 365
-@inline steps_per_year(::HourlyResolution) = 8760
-@inline steps_per_year(::SixHourlyResolution) = 8760  # output to solver is hourly
+@inline samples_per_day(::SubDaily{N}) where {N} = N
+@inline samples_per_day(::MinMax) = 1
 
-# Number of steps/year in the *native* files — drives staging-buffer sizes.
-# For sources that don't distinguish native from output resolution, these equal steps_per_year.
-@inline _native_steps_per_year(::MonthlyResolution) = 12
-@inline _native_steps_per_year(::DailyResolution) = 365
-@inline _native_steps_per_year(::HourlyResolution) = 8760
-@inline _native_steps_per_year(::SixHourlyResolution) = 1460   # 4 × 365
+"""
+    weather_calendar(::Type{<:RasterDataSource}) -> Calendar
 
-# Number of distinct solar-geometry days/year — used to size `scratch.solar.out`
-# in `_build_inputs_and_pool`. For sub-daily sources the output is hourly (365 days)
-# even though files contain >365 native steps.
-@inline _solar_ndays_per_year(::MonthlyResolution) = 12
-@inline _solar_ndays_per_year(::DailyResolution) = 365
-@inline _solar_ndays_per_year(::HourlyResolution) = 365
-@inline _solar_ndays_per_year(::SixHourlyResolution) = 365
+Which days the source covers. Default `Monthly()`; daily/sub-daily sources
+override to `Daily()`.
+"""
+@inline weather_calendar(::Type) = Monthly()
 
-@inline _minmax_env_type(::MonthlyResolution) = MonthlyMinMaxEnvironment
-@inline _minmax_env_type(::DailyResolution) = DailyMinMaxEnvironment
+"""
+    native_timestep(::Type{<:RasterDataSource}) -> Timestep
 
-@inline _days_of_year(::MonthlyResolution, nyears) = repeat(Microclimate.DEFAULT_DAYS, nyears)
-@inline _days_of_year(::DailyResolution, nyears) = repeat(1:365, nyears)
-@inline _days_of_year(::HourlyResolution, nyears) = repeat(1:365, nyears)
-@inline _days_of_year(::SixHourlyResolution, nyears) = repeat(1:365, nyears)
+The within-day timestep the source's data arrives at. Default `MinMax()`
+(daily/monthly min/max sources); hourly/sub-daily sources override.
+"""
+@inline native_timestep(::Type) = MinMax()
 
-# ---------------------------------------------------------------------------
-# Date-range helpers
-# ---------------------------------------------------------------------------
+# Representative (solar-geometry) days per year, by calendar.
+@inline days_per_year(::Monthly) = 12
+@inline days_per_year(::Daily)   = 365
 
-# Convert an old-style integer years range to a full-calendar Date range.
-_years_to_dates(years::AbstractRange{Int}) =
-    Date(first(years), 1, 1):Day(1):Date(last(years), 12, 31)
-
-# Derive the integer year span that must be loaded from weather sources to
-# cover all dates.
-_years_from_dates(d::Date)                 = year(d):year(d)
-_years_from_dates(r::AbstractRange{Date})  = minimum(year, r):maximum(year, r)
-
-# Day-of-year on the 365-day calendar (Feb 29 is dropped, so March 1 = doy 60
-# whether or not the year is a leap year).
-function _doy_noleap(d::Date)
-    doy = dayofyear(d)
-    isleapyear(year(d)) && d >= Date(year(d), 3, 1) && (doy -= 1)
-    return doy
-end
-
-_is_leapday(d::Date) = isleapyear(year(d)) && month(d) == 2 && day(d) == 29
-
-# Normalise user-supplied dates to a sorted Vector{Date}, dropping Feb 29
-# (consistent with the 365-day-per-year convention throughout).
-_normalise_dates(d::Date) = _is_leapday(d) ? Date[] : [d]
-function _normalise_dates(r::AbstractRange{Date})
-    v = filter(!_is_leapday, collect(r))
-    isempty(v) && error(
-        "No valid simulation dates remain after dropping Feb 29 " *
-        "(leap days are not yet supported).")
-    return v
-end
-
-# Compute the 1-based positional Ti range into the full-years weather stack,
-# and the day-of-year vector for the solver (one entry per unique day, or per
-# month for monthly sources). `dates_vec` must already be normalised (sorted,
-# no Feb 29).
-function _ti_range_for_dates(::MonthlyResolution, years, dates_vec::Vector{Date})
-    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
-    years_v = collect(years)
-    yi_start = findfirst(==(year(start_d)), years_v)
-    yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 12 + month(start_d)
-    ti_end   = (yi_end   - 1) * 12 + month(end_d)
-    days_doy = Int[]
-    d = Date(year(start_d), month(start_d), 1)
-    stop = Date(year(end_d), month(end_d), 1)
-    while d <= stop
-        push!(days_doy, Microclimate.DEFAULT_DAYS[month(d)])
-        d += Month(1)
-    end
-    return ti_start, ti_end, days_doy
-end
-
-function _ti_range_for_dates(::DailyResolution, years, dates_vec::Vector{Date})
-    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
-    years_v = collect(years)
-    yi_start = findfirst(==(year(start_d)), years_v)
-    yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 365 + _doy_noleap(start_d)
-    ti_end   = (yi_end   - 1) * 365 + _doy_noleap(end_d)
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
-end
-
-function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
-    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
-    years_v = collect(years)
-    yi_start = findfirst(==(year(start_d)), years_v)
-    yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 8760 + (_doy_noleap(start_d) - 1) * 24 + 1
-    ti_end   = (yi_end   - 1) * 8760 + _doy_noleap(end_d) * 24
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
-end
-
-# Native stack has 1460 Ti steps/year (4 × 365), so the Ti slice is in 6h units.
-# The returned day-of-year vector has one entry per calendar day (365/year)
-# because solar geometry and the derivation chain operate at daily granularity
-# regardless of sub-daily native resolution.
-function _ti_range_for_dates(::SixHourlyResolution, years, dates_vec::Vector{Date})
-    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
-    years_v = collect(years)
-    yi_start = findfirst(==(year(start_d)), years_v)
-    yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 1460 + (_doy_noleap(start_d) - 1) * 4 + 1
-    ti_end   = (yi_end   - 1) * 1460 + _doy_noleap(end_d) * 4
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
-end
-
-# One "anchor" Date per solver step — used to carry the year when building
-# the output DateTime axis. Monthly: 1st of each selected month. Daily/hourly:
-# the dates_vec itself (already one per calendar day).
-function _step_anchor_dates(::MonthlyResolution, dates_vec::Vector{Date})
-    seen = Set{Tuple{Int,Int}}()
-    result = Date[]
-    for d in sort(dates_vec)
-        k = (year(d), month(d))
-        k in seen && continue
-        push!(seen, k)
-        push!(result, Date(year(d), month(d), 1))
-    end
-    return result
-end
-_step_anchor_dates(::TemporalResolution, dates_vec::Vector{Date}) = dates_vec
-
-# Monthly forcing → independent representative days (Fortran "monthly mode");
-# daily/hourly/sub-daily forcing → continuous run with state carrying day-to-day.
-@inline _time_mode(::MonthlyResolution) = Microclimate.NonConsecutiveDayMode()
-@inline _time_mode(::DailyResolution) = Microclimate.ConsecutiveDayMode()
-@inline _time_mode(::HourlyResolution) = Microclimate.ConsecutiveDayMode()
-@inline _time_mode(::SixHourlyResolution) = Microclimate.ConsecutiveDayMode()
+# Total per-year steps at a given calendar × timestep. MinMax → one step per
+# day (12 or 365); SubDaily{N} → N per day. Native timestep sizes the native
+# buffers; target timestep sizes the output buffers.
+@inline steps_per_year(cal::Calendar, cad::Timestep) =
+    days_per_year(cal) * samples_per_day(cad)
 
 # ---------------------------------------------------------------------------
 # Loader traits
@@ -404,9 +289,8 @@ activate the lapse correction machinery in `_lapse_correct!`.
 Source-specific post-processing hook called immediately after every layer of
 `stack` has been loaded. Default is a no-op (returns `stack` unchanged).
 
-Override for sources whose files contain sub-daily Ti that the declared
-`temporal_resolution` does not expect — e.g. `NCEP{SurfaceFlux}` in daily mode
-stores 6-hourly data that needs averaging to daily.
+Override for sources whose files contain a finer Ti than the native buffers
+expect and need aggregating after load (see `_aggregate_ti_to_daily`).
 """
 _post_load_stack!(::Type, stack, _nyears) = stack
 
@@ -441,7 +325,17 @@ function _load_weather(source::Type, area::Extent, years)
     # `replace_missing(..., NaN)` strips the Missing union and lets
     # NaN propagate visibly if any cell is genuinely masked.
     stack = Rasters.replace_missing(stack, NaN)
-    return _post_load_stack!(source, stack, length(years))
+    stack = _post_load_stack!(source, stack, length(years))
+    # Every source must deliver exactly the native step count it declares
+    # (calendar days/year × samples/day × years). Catch any loader that
+    # returns a different Ti rather than mis-slicing it downstream.
+    expected = steps_per_year(weather_calendar(source), native_timestep(source)) * length(years)
+    n = length(dims(stack, Ti))
+    n == expected || error(
+        "$(nameof(source)): loaded Ti=$n, but the source declares $expected " *
+        "($(nameof(typeof(weather_calendar(source)))) × " *
+        "$(nameof(typeof(native_timestep(source)))), $(length(years)) years)")
+    return stack
 end
 
 # ---------------------------------------------------------------------------
@@ -594,316 +488,372 @@ compiled path per derivation.
 """
 function derive! end
 
-# Unified derivation chain — every derivation any source might need, in
-# topological order. Each step is skipped when its output is in the
-# source's native variable set (so e.g. CHELSA{Climate} skips both the
-# RH derivations and `cloud_cover`, WorldClim skips `actual_vapour_pressure`,
-# TerraClimate skips both `wind_speed` and `vapour_pressure_deficit`).
+# Physics chains — ordered lists of timestep-blind derivations. A chain is a
+# property of the solver-input shape it feeds, not of any source: `_is_native`
+# skips whatever the source already provides (so CHELSA{Climate} skips the RH
+# derivations and `cloud_cover`, TerraClimate skips `wind_speed`, etc.). Time
+# never appears here — moving a quantity between timesteps is `resample!`.
 #
-# Derivations whose output is *not* native AND whose inputs are zero
-# (because no upstream step populates them) compute harmless garbage that
-# nothing downstream reads. We rely on the unused-output property rather
+# A derivation whose output is not native AND whose inputs are unpopulated
+# computes harmless garbage nothing downstream reads; we rely on that rather
 # than runtime input-availability checks.
-const _DEFAULT_DERIVATIONS = (
+
+# Envelope shape (daily/monthly min-max sources): builds the min/max
+# environment the solver expands into a diel curve.
+const _ENVELOPE_PHYSICS = (
     Val(:reference_temperature_max), # ← lapse(maximum_temperature)
     Val(:reference_temperature_min), # ← lapse(minimum_temperature)
-    Val(:mean_temperature), # ← (ref_max + ref_min) / 2
-    Val(:wind_speed), # ← √(u_wind² + v_wind²)   — NCEP
-    Val(:actual_vapour_pressure), # ← q·p / (0.622 + 0.378·q) — NCEP
-    Val(:vapour_pressure_deficit), # ← e_s(mean_T) - actual_VP  — WorldClim, NCEP
-    Val(:reference_humidity_max), # ← from VPD + ref_temp_min
-    Val(:reference_humidity_min), # ← from VPD + ref_temp_max
-    Val(:reference_wind_max), # ← wind_speed × shear_factor
-    Val(:reference_wind_min), # ← ref_wind_max × 0.1
-    Val(:cloud_cover), # ← from downward_shortwave_radiation
-    Val(:cloud_min), # ← cloud_cover × 0.5 clamp
-    Val(:cloud_max), # ← cloud_cover × 2.0 clamp
-    Val(:deep_soil_temperature), # ← annual-mean of mean_temperature
+    Val(:mean_temperature),          # ← (ref_max + ref_min) / 2
+    Val(:wind_speed),                # ← √(u_wind² + v_wind²)
+    Val(:actual_vapour_pressure),    # ← q·p / (0.622 + 0.378·q)
+    Val(:vapour_pressure_deficit),   # ← e_s(mean_T) − actual_VP
+    Val(:reference_humidity_max),    # ← from VPD + ref_temp_min
+    Val(:reference_humidity_min),    # ← from VPD + ref_temp_max
+    Val(:reference_wind_max),        # ← wind_speed × shear_factor
+    Val(:reference_wind_min),        # ← ref_wind_max × 0.1
+    Val(:cloud_cover),               # ← from downward_shortwave_radiation
+    Val(:cloud_min),                 # ← cloud_cover × 0.5 clamp
+    Val(:cloud_max),                 # ← cloud_cover × 2.0 clamp
+    Val(:deep_soil_temperature),     # ← annual mean of mean_temperature
 )
 
-# Hourly-mode chain — for sources like ERA5 that provide hourly values
-# directly. No min/max envelope to build; the canonical hourly buffers
-# *are* the env_hourly arrays. Just convert components into the shapes
-# the solver wants and aggregate to env_daily.
-const _DERIVATIONS_HOURLY = (
-    Val(:wind_speed), # u/v → reference_wind_speed
-    Val(:actual_vapour_pressure_from_dewpoint), # T_dew → actual_VP
-    Val(:reference_humidity), # actual_VP + T → RH
-    Val(:rainfall_daily_from_hourly), # hourly rainfall → daily total
-    Val(:deep_soil_temperature_from_hourly), # annual mean of hourly T
+# Hourly-series shape (sources whose within-day samples feed env_hourly
+# directly). The daily tier is filled by `resample!`/`_deep_soil_from_series!`
+# in the assembler, not here.
+const _SERIES_PHYSICS = (
+    Val(:wind_speed),                            # u/v → wind speed
+    Val(:actual_vapour_pressure_from_dewpoint),  # T_dew → actual_VP
+    Val(:reference_humidity),                    # actual_VP + T → RH
 )
 
-# Sub-daily (6-hourly) chain — for sources like NCEP that provide
-# 6-hourly values that must be interpolated/disaggregated to hourly.
+# ---------------------------------------------------------------------------
+# Temporal resampling — the time axis, generic over timestep
+# ---------------------------------------------------------------------------
 #
-#  1. :solar_geometry          — populate scratch.solar.out with hourly clear-sky
-#  2. :wind_speed_6h           — u/v → scalar wind at 6h resolution
-#  3. :actual_vapour_pressure_6h — specific_humidity + pressure → VP at 6h
-#  4. :interpolate_met_6h_to_1h  — linear 6h→1h for T, wind, VP, pressure, LW
-#  5. :disaggregate_radiation_6h_to_1h — solar-aware 6h→1h for shortwave
-#  6. :reference_humidity      — actual_VP + T → RH (reuses hourly-mode method)
-#  7. :rainfall_daily_from_6h  — sum 4 × 6h blocks per day → daily total
-#  8. :deep_soil_temperature_from_hourly — annual mean (reuses hourly-mode method)
-const _DERIVATIONS_6H_TO_1H = (
-    Val(:solar_geometry),
-    Val(:wind_speed_6h),
-    Val(:actual_vapour_pressure_6h),
-    Val(:interpolate_met_6h_to_1h),
-    Val(:apply_wind_shear),
-    Val(:disaggregate_radiation_6h_to_1h),
-    Val(:reference_humidity),
-    Val(:rainfall_daily_from_6h),
-    Val(:deep_soil_temperature_from_hourly),
-)
+# `resample!` moves a quantity from a native timestep (`nin` samples/day) to a
+# target (`nout` samples/day, or a daily total). How a quantity resamples is a
+# property of the quantity, declared once by `resampling_rule`:
+#   * Interpolate       — smooth met fields (temperature, wind, vapour
+#                         pressure, pressure, longwave).
+#   * SolarDisaggregate — shortwave: hold opacity constant within each native
+#                         block and multiply by the hourly clear-sky curve.
+#   * Accumulate        — fluxes that sum over a day (rainfall).
 
-"""
-    weather_derivations(::Type{<:RasterDataSource}) -> Tuple{Val, …}
+abstract type ResamplingRule end
+struct Interpolate <: ResamplingRule end
+struct SolarDisaggregate <: ResamplingRule end
+struct Accumulate <: ResamplingRule end
 
-The ordered derivation chain to run for this source. Defaults to
-`_DEFAULT_DERIVATIONS`, which covers every monthly/daily source we
-currently support via the skip-if-native logic. Hourly sources should
-override to `_DERIVATIONS_HOURLY`.
-"""
-@inline weather_derivations(::Type) = _DEFAULT_DERIVATIONS
+@inline resampling_rule(::Val) = Interpolate()
+@inline resampling_rule(::Val{:global_radiation}) = SolarDisaggregate()
+@inline resampling_rule(::Val{:downward_shortwave_radiation}) = SolarDisaggregate()
+@inline resampling_rule(::Val{:rainfall}) = Accumulate()
+
+# Native sample `i` (0-based) of day `d`, clamping across day boundaries to the
+# neighbouring day's edge sample (or this day's edge at the series ends).
+@inline function _native_at(src, d, i, nin, ndays)
+    if i < 0
+        d > 1 ? src[(d - 2) * nin + nin] : src[(d - 1) * nin + 1]
+    elseif i >= nin
+        d < ndays ? src[d * nin + 1] : src[(d - 1) * nin + nin]
+    else
+        src[(d - 1) * nin + i + 1]
+    end
+end
+
+# Linear interpolation from `nin` to `nout` samples/day. Each sample sits at the
+# midpoint of its slot; output midpoints interpolate between bracketing native
+# midpoints. Reduces to the old 6h→1h kernel for nin=4, nout=24.
+function _resample!(out, src, ::Interpolate, nin::Int, nout::Int)
+    ndays = length(src) ÷ nin
+    @inbounds for d in 1:ndays
+        ob = (d - 1) * nout
+        for j in 0:(nout - 1)
+            x  = ((j + 0.5) / nout) * nin - 0.5   # output midpoint on native index axis
+            i0 = floor(Int, x)
+            t  = x - i0
+            v0 = _native_at(src, d, i0,     nin, ndays)
+            v1 = _native_at(src, d, i0 + 1, nin, ndays)
+            out[ob + j + 1] = v0 * (1 - t) + v1 * t
+        end
+    end
+    return out
+end
+
+# Solar-geometry-aware shortwave disaggregation: per native block, opacity =
+# observed / clear-sky block-mean, applied to each output step's clear-sky.
+# `clear_sky` is the hourly (nout/day) clear-sky global-horizontal series.
+function _resample!(out, src, ::SolarDisaggregate, nin::Int, nout::Int, clear_sky)
+    ndays = length(src) ÷ nin
+    hpb = nout ÷ nin                       # output steps per native block
+    @inbounds for d in 1:ndays
+        hb = (d - 1) * nout
+        for b in 0:(nin - 1)
+            cs_sum = zero(eltype(clear_sky))
+            for j in 1:hpb
+                cs_sum += clear_sky[hb + b * hpb + j]
+            end
+            cs_mean = cs_sum / hpb
+            obs = src[(d - 1) * nin + b + 1]
+            opacity = cs_mean <= zero(cs_mean) ? 0.0 :
+                clamp(ustrip(u"W/m^2", obs) / ustrip(u"W/m^2", cs_mean), 0.0, 1.0)
+            for j in 1:hpb
+                out[hb + b * hpb + j] = opacity * clear_sky[hb + b * hpb + j]
+            end
+        end
+    end
+    return out
+end
+
+# Sum the `nin` native samples in each day into one daily total.
+function _resample!(daily, src, ::Accumulate, nin::Int)
+    ndays = length(daily)
+    @inbounds for d in 1:ndays
+        s = zero(eltype(src))
+        for i in 1:nin
+            s += src[(d - 1) * nin + i]
+        end
+        daily[d] = s
+    end
+    return daily
+end
+
+# ---------------------------------------------------------------------------
+# Shared physics combiners — one implementation, called at any timestep
+# ---------------------------------------------------------------------------
+
+# Scalar wind speed from horizontal U/V components.
+@inline function _wind_speed!(out, u, v)
+    @. out = sqrt(u^2 + v^2)
+    return out
+end
+
+# Actual vapour pressure from specific humidity (kg/kg) and pressure:
+#   e = q·p / (0.622 + 0.378·q)
+function _vapour_pressure_from_specific_humidity!(out, q, p)
+    @inbounds for k in eachindex(out)
+        out[k] = q[k] * p[k] / (0.622 + 0.378 * q[k])
+    end
+    return out
+end
+
+# Deep-soil temperature: annual mean of a temperature series, broadcast across
+# the daily entries. `series` is hourly (365×24/year) or per-day; both reduce
+# to a per-year mean replicated to each day.
+function _deep_soil_from_series!(out_daily, series)
+    ndays = length(out_daily)
+    nseries = length(series)
+    if ndays < 365
+        fill!(out_daily, sum(series) / nseries)
+        return out_daily
+    end
+    spd = nseries ÷ ndays
+    nyears = ndays ÷ 365
+    @inbounds for y in 1:nyears
+        s0 = (y - 1) * 365 * spd
+        annual_sum = zero(eltype(series))
+        for k in 1:(365 * spd)
+            annual_sum += series[s0 + k]
+        end
+        annual_mean = annual_sum / (365 * spd)
+        d0 = (y - 1) * 365
+        for d in 1:365
+            out_daily[d0 + d] = annual_mean
+        end
+    end
+    return out_daily
+end
 
 # ---------------------------------------------------------------------------
 # Buffer allocation
 # ---------------------------------------------------------------------------
 
 """
-    allocate_weather_buffers(source, nyears) -> NamedTuple
+    allocate_weather_buffers(source, target_timestep, nyears) -> NamedTuple
 
 Per-worker scratch for `assemble_weather!`. Allocates one unit-tagged
 buffer per canonical variable plus the pre-constructed env structs that
 share storage with those buffers.
 
-The total number of timesteps is `nyears * steps_per_year(temporal_resolution(source))`,
-and the env-minmax struct type is `MonthlyMinMaxEnvironment` or
-`DailyMinMaxEnvironment` per the source's `temporal_resolution`. Everything
-else — `DailyTimeseries`, `HourlyTimeseries`, the intermediate buffers —
-just scales with the total timestep count.
+Buffer sizes follow the two dials: `weather_calendar(source)` sets the days
+per year (and, in `MinMax` timestep, the env-minmax struct —
+`MonthlyMinMaxEnvironment` vs `DailyMinMaxEnvironment`); `native_timestep(source)`
+sizes the native tier and `target_timestep` the output tier.
 """
-function allocate_weather_buffers(source::Type, nyears::Int)
-    resolution = temporal_resolution(source)
-    _allocate_weather_buffers(resolution, source, _days_of_year(resolution, nyears))
+function allocate_weather_buffers(source::Type, target::Timestep, nyears::Int)
+    cal = weather_calendar(source)
+    native = native_timestep(source)
+    _allocate_weather_buffers(cal, native, target, _days_of_year(cal, nyears))
 end
 
-function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyResolution},
-                                   ::Any, days_of_year::AbstractVector{Int})
+# The working unit each canonical quantity is computed in — the single source
+# of truth, so the allocators below just list quantity names. `nothing` (the
+# default) means a dimensionless Float64 quantity (humidity fractions, cloud
+# fractions, specific humidity, soil moisture). Distinct from `canonical_unit`,
+# which is the unit the *output* layers are presented in (e.g. K here vs °C out).
+working_units(::Val{:maximum_temperature})          = u"K"
+working_units(::Val{:minimum_temperature})          = u"K"
+working_units(::Val{:mean_temperature})             = u"K"
+working_units(::Val{:reference_temperature})        = u"K"
+working_units(::Val{:reference_temperature_min})    = u"K"
+working_units(::Val{:reference_temperature_max})    = u"K"
+working_units(::Val{:dewpoint_temperature})         = u"K"
+working_units(::Val{:deep_soil_temperature})        = u"K"
+working_units(::Val{:u_wind})                       = u"m/s"
+working_units(::Val{:v_wind})                       = u"m/s"
+working_units(::Val{:wind_speed})                   = u"m/s"
+working_units(::Val{:reference_wind_min})           = u"m/s"
+working_units(::Val{:reference_wind_max})           = u"m/s"
+working_units(::Val{:surface_pressure})             = u"Pa"
+working_units(::Val{:pressure})                     = u"Pa"
+working_units(::Val{:actual_vapour_pressure})       = u"kPa"
+working_units(::Val{:vapour_pressure_deficit})      = u"kPa"
+working_units(::Val{:downward_shortwave_radiation}) = u"W/m^2"
+working_units(::Val{:global_radiation})             = u"W/m^2"
+working_units(::Val{:longwave_radiation})           = u"W/m^2"
+working_units(::Val{:rainfall})                     = u"kg/m^2"
+working_units(::Val{:rainfall_daily})               = u"kg/m^2"
+working_units(::Val{:zenith_angle})                 = u"°"
+
+@inline _zeros(unit, n) = zeros(typeof(0.0 * unit), n)
+@inline _zeros(::Nothing, n) = zeros(Float64, n)
+@inline _zero_buffer(::Val{name}, n) where {name} = _zeros(working_units(Val(name)), n)
+
+# A NamedTuple of zeroed canonical buffers of length `n`, one per name, each
+# tagged with `working_units`. (`names` is a literal tuple at every call site, so
+# the per-name unit dispatch folds to a concrete buffer type.)
+@inline _zero_buffers(names::Tuple, n) =
+    NamedTuple{names}(map(name -> _zero_buffer(Val(name), n), names))
+
+# `environment_daily` is the same per-step struct in every mode — only its
+# length and the (shared) rainfall / deep-soil arrays differ.
+function _environment_daily(n, rainfall, deep_soil_temperature)
+    DailyTimeseries(;
+        shade = zeros(Float64, n),
+        soil_wetness = zeros(Float64, n),
+        surface_emissivity = fill(0.95, n),
+        cloud_emissivity = fill(0.95, n),
+        rainfall, deep_soil_temperature,
+        leaf_area_index = fill(0.1, n),
+    )
+end
+
+# `environment_hourly` for the series modes: every field populated from the
+# output-tier buffers `out`, which the solver reads via the `env_minmax::Nothing`
+# dispatch.
+_environment_hourly(out) = HourlyTimeseries(;
+    out.pressure, out.reference_temperature, out.reference_humidity,
+    reference_wind_speed = out.wind_speed,
+    out.global_radiation, out.longwave_radiation, out.cloud_cover,
+    out.rainfall, out.zenith_angle,
+)
+
+# `environment_hourly` for the envelope modes: a pressure-only stub — the solver
+# synthesises the diel curve from env_minmax. Pressure is rebuilt/swapped per
+# call, so the Fill value here is just a placeholder (24× the per-step count).
+_environment_hourly_stub(n) = HourlyTimeseries(;
+    pressure = Fill(atmospheric_pressure(0.0u"m"), n * 24),
+    reference_temperature = nothing, reference_humidity = nothing,
+    reference_wind_speed = nothing, global_radiation = nothing,
+    longwave_radiation = nothing, cloud_cover = nothing,
+    rainfall = nothing, zenith_angle = nothing,
+)
+
+# The per-step buffer set every envelope (min/max) source allocates — a superset:
+# a source provides some quantities natively and derives the rest; any it never
+# touches stay zero.
+const _ENVELOPE_BUFFERS = (
+    :maximum_temperature, :minimum_temperature, :mean_temperature,
+    :reference_temperature_min, :reference_temperature_max,
+    :wind_speed, :u_wind, :v_wind, :reference_wind_min, :reference_wind_max,
+    :vapour_pressure_deficit, :actual_vapour_pressure,
+    :specific_humidity, :surface_pressure,
+    :reference_humidity_min, :reference_humidity_max,
+    :downward_shortwave_radiation, :cloud_cover, :cloud_min, :cloud_max,
+    :rainfall, :deep_soil_temperature, :soil_moisture,
+)
+
+# Every series-shape source (hourly or resampled-to-hourly) shares the same
+# output tier and the same daily-aggregate tier — only whether it carries a
+# separate coarser native tier differs (resample vs not).
+const _SERIES_OUTPUT = (
+    :reference_temperature, :reference_humidity, :wind_speed, :pressure,
+    :cloud_cover, :global_radiation, :longwave_radiation, :rainfall,
+    :zenith_angle, :actual_vapour_pressure,
+)
+const _SERIES_DAILY = (:rainfall_daily, :deep_soil_temperature, :soil_moisture)
+
+# MinMax timestep (daily/monthly high-low sources): the solver draws the diel
+# curve from the per-step envelope, so the target timestep does not change the
+# buffers. The calendar picks the env-minmax struct.
+function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep,
+                                   days_of_year::AbstractVector{Int})
     nsteps = length(days_of_year)
-    zeros_float(n) = zeros(Float64, n)
+    # Some of these arrays are also held inside the env structs below; writes
+    # via the canonical name show up in the struct (same array).
+    b = _zero_buffers(_ENVELOPE_BUFFERS, nsteps)
 
-    # Canonical buffers — each carries the unit appropriate for its quantity.
-    # Some arrays are also held inside the env structs below; writes via the
-    # canonical name show up in the struct (same array).
-    maximum_temperature = zeros(typeof(0.0u"K"), nsteps)
-    minimum_temperature = zeros(typeof(0.0u"K"), nsteps)
-    mean_temperature = zeros(typeof(0.0u"K"), nsteps)
-    reference_temperature_min = zeros(typeof(0.0u"K"), nsteps)
-    reference_temperature_max = zeros(typeof(0.0u"K"), nsteps)
-    wind_speed = zeros(typeof(0.0u"m/s"), nsteps)
-    u_wind = zeros(typeof(0.0u"m/s"), nsteps)
-    v_wind = zeros(typeof(0.0u"m/s"), nsteps)
-    reference_wind_min = zeros(typeof(0.0u"m/s"), nsteps)
-    reference_wind_max = zeros(typeof(0.0u"m/s"), nsteps)
-    vapour_pressure_deficit = zeros(typeof(0.0u"kPa"), nsteps)
-    actual_vapour_pressure = zeros(typeof(0.0u"kPa"), nsteps)
-    specific_humidity = zeros_float(nsteps)
-    surface_pressure = zeros(typeof(0.0u"Pa"), nsteps)
-    reference_humidity_min = zeros_float(nsteps)
-    reference_humidity_max = zeros_float(nsteps)
-    downward_shortwave_radiation = zeros(typeof(0.0u"W/m^2"), nsteps)
-    cloud_cover = zeros_float(nsteps)
-    cloud_min = zeros_float(nsteps)
-    cloud_max = zeros_float(nsteps)
-    rainfall = zeros(typeof(0.0u"kg/m^2"), nsteps)
-    deep_soil_temperature = zeros(typeof(0.0u"K"), nsteps)
-    soil_moisture = zeros_float(nsteps)
-
-    # `_minmax_env_type(resolution)` returns the type constructor — same
-    # field set for Monthly and Daily, so the kwargs are identical.
-    environment_minmax = _minmax_env_type(resolution)(;
-        reference_temperature_min, reference_temperature_max,
-        reference_wind_min, reference_wind_max,
-        reference_humidity_min, reference_humidity_max,
-        cloud_min, cloud_max,
+    # `_minmax_env_type(calendar)` returns the type constructor — same field set
+    # for Monthly and Daily, so the kwargs are identical.
+    environment_minmax = _minmax_env_type(calendar)(;
+        b.reference_temperature_min, b.reference_temperature_max,
+        b.reference_wind_min, b.reference_wind_max,
+        b.reference_humidity_min, b.reference_humidity_max,
+        b.cloud_min, b.cloud_max,
         minima_times = (temp = 0, wind = 0, humidity = 1, cloud = 1),
         maxima_times = (temp = 1, wind = 1, humidity = 0, cloud = 0),
     )
-    # DailyTimeseries is the "per-step" struct regardless of resolution —
-    # one entry per main timestep (month for monthly, day for daily).
-    environment_daily = DailyTimeseries(;
-        shade = zeros_float(nsteps),
-        soil_wetness = zeros_float(nsteps),
-        surface_emissivity = fill(0.95, nsteps),
-        cloud_emissivity = fill(0.95, nsteps),
-        rainfall, deep_soil_temperature,
-        leaf_area_index = fill(0.1, nsteps),
-    )
-    # Pressure is constant per pixel — a `Fill` is rebuilt and swapped in
-    # via `setproperties` each call, so this initial value is just a stub.
-    # HourlyTimeseries is always 24× the main step count.
-    environment_hourly = HourlyTimeseries(;
-        pressure = Fill(atmospheric_pressure(0.0u"m"), nsteps * 24),
-        reference_temperature = nothing, reference_humidity = nothing,
-        reference_wind_speed = nothing, global_radiation = nothing,
-        longwave_radiation = nothing, cloud_cover = nothing,
-        rainfall = nothing, zenith_angle = nothing,
-    )
+    environment_daily = _environment_daily(nsteps, b.rainfall, b.deep_soil_temperature)
+    environment_hourly = _environment_hourly_stub(nsteps)
 
-    return (;
-        maximum_temperature, minimum_temperature, mean_temperature,
-        reference_temperature_min, reference_temperature_max,
-        wind_speed, u_wind, v_wind, reference_wind_min, reference_wind_max,
-        vapour_pressure_deficit, actual_vapour_pressure,
-        specific_humidity, surface_pressure,
-        reference_humidity_min, reference_humidity_max,
-        downward_shortwave_radiation, cloud_cover, cloud_min, cloud_max,
-        rainfall, deep_soil_temperature, soil_moisture,
-        days_of_year,
-        environment_minmax, environment_daily, environment_hourly,
-    )
+    return (; b..., days_of_year,
+        environment_minmax, environment_daily, environment_hourly)
 end
 
-# Hourly mode: env_minmax = nothing, env_hourly arrays ARE the canonical
-# buffers (shared storage), env_daily arrays sit at 1/24 the resolution
-# and are filled by aggregating the hourly canonical buffers.
-function _allocate_weather_buffers(::HourlyResolution, ::Any, days_of_year::AbstractVector{Int})
+# Native timestep already equals the target (hourly in, hourly out): the output
+# buffers are filled directly, no separate native tier and no resample. The only
+# extra buffers are the wind components and dewpoint the series physics consume.
+function _allocate_weather_buffers(::Calendar, ::SubDaily{24}, ::SubDaily{24},
+                                   days_of_year::AbstractVector{Int})
     ndays  = length(days_of_year)    # one per unique day (Feb 29 dropped)
     nhours = ndays * 24
-    zeros_float(n) = zeros(Float64, n)
+    output = _zero_buffers(_SERIES_OUTPUT, nhours)
+    inputs = _zero_buffers((:u_wind, :v_wind, :dewpoint_temperature), nhours)
+    daily  = _zero_buffers(_SERIES_DAILY, ndays)
 
-    # Hourly canonical buffers — shared with `environment_hourly`.
-    reference_temperature = zeros(typeof(0.0u"K"), nhours)
-    reference_humidity = zeros_float(nhours)
-    wind_speed = zeros(typeof(0.0u"m/s"), nhours)
-    pressure = zeros(typeof(0.0u"Pa"), nhours)
-    cloud_cover = zeros_float(nhours)
-    global_radiation = zeros(typeof(0.0u"W/m^2"), nhours)
-    longwave_radiation = zeros(typeof(0.0u"W/m^2"), nhours)
-    rainfall = zeros(typeof(0.0u"kg/m^2"), nhours)
-    zenith_angle = zeros(typeof(0.0u"°"), nhours)
+    environment_daily  = _environment_daily(ndays, daily.rainfall_daily, daily.deep_soil_temperature)
+    environment_hourly = _environment_hourly(output)
 
-    # Hourly intermediates feeding the small derivation chain.
-    u_wind = zeros(typeof(0.0u"m/s"), nhours)
-    v_wind = zeros(typeof(0.0u"m/s"), nhours)
-    dewpoint_temperature = zeros(typeof(0.0u"K"), nhours)
-    actual_vapour_pressure = zeros(typeof(0.0u"kPa"), nhours)
-
-    # `environment_daily` lives at one entry per unique day — aggregated from hourly.
-    rainfall_daily = zeros(typeof(0.0u"kg/m^2"), ndays)
-    deep_soil_temperature = zeros(typeof(0.0u"K"), ndays)
-
-    environment_daily = DailyTimeseries(;
-        shade = zeros_float(ndays),
-        soil_wetness = zeros_float(ndays),
-        surface_emissivity = fill(0.95, ndays),
-        cloud_emissivity = fill(0.95, ndays),
-        rainfall = rainfall_daily,
-        deep_soil_temperature,
-        leaf_area_index = fill(0.1, ndays),
-    )
-    # All HourlyTimeseries fields populated — solver dispatches on the
-    # `environment_minmax::Nothing` method and reads everything from here.
-    environment_hourly = HourlyTimeseries(;
-        pressure, reference_temperature, reference_humidity,
-        reference_wind_speed = wind_speed,
-        global_radiation, longwave_radiation, cloud_cover,
-        rainfall, zenith_angle,
-    )
-
-    return (;
-        reference_temperature, reference_humidity, wind_speed,
-        u_wind, v_wind, pressure, cloud_cover,
-        global_radiation, longwave_radiation,
-        rainfall, rainfall_daily, zenith_angle,
-        dewpoint_temperature, actual_vapour_pressure,
-        deep_soil_temperature,
-        days_of_year,
-        environment_minmax = nothing,
-        environment_daily, environment_hourly,
-    )
+    return (; output..., inputs..., daily..., days_of_year,
+        environment_minmax = nothing, environment_daily, environment_hourly)
 end
 
-# Sub-daily (6-hourly) mode: two tiers of buffers.
-#   * `*_6h` staging buffers at native 6h resolution (1460 steps/year) — written by
-#     `_read_native!` via the source's WeatherVariable declarations.
-#   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
-#     and shared with `environment_hourly` exactly as in `HourlyResolution`.
-#   * Daily aggregate buffers (365/year) shared with `environment_daily`.
-# TODO: The buffer schema here differs from HourlyResolution (uses u/v_wind_6h and
-# specific_humidity_6h/surface_pressure_6h staging fields instead of bare u/v_wind and
-# dewpoint_temperature), so the duplication can't be eliminated by simply extending the
-# hourly allocator. Addressed holistically in the SubDailyResolution{N} refactor.
-function _allocate_weather_buffers(::SixHourlyResolution, _source,
+# Native timestep differs from the target (e.g. NCEP six-hourly → hourly). Same
+# output and daily tiers as the hourly case, plus a separate coarser `native`
+# tier of the source's native inputs (kept nested — it has the same quantity
+# names at a different length). `assemble_weather!` derives physics on the native
+# tier, then `resample!`s each quantity to the output tier.
+function _allocate_weather_buffers(::Calendar, native_step::SubDaily, target_step::SubDaily,
                                    days_of_year::AbstractVector{Int})
-    ndays  = length(days_of_year)   # 365 per year (no-leap calendar)
-    n6h    = ndays * 4              # native 6h staging steps
-    nhours = ndays * 24             # hourly output
-    zeros_float(n) = zeros(Float64, n)
+    ndays = length(days_of_year)                  # 365 per year (no-leap calendar)
+    nnat  = ndays * samples_per_day(native_step)  # native steps
+    nout  = ndays * samples_per_day(target_step)  # output steps
 
-    # 6h staging buffers (written by _read_native! via WeatherVariable declarations)
-    reference_temperature_6h          = zeros(typeof(0.0u"K"),     n6h)
-    u_wind_6h                         = zeros(typeof(0.0u"m/s"),   n6h)
-    v_wind_6h                         = zeros(typeof(0.0u"m/s"),   n6h)
-    specific_humidity_6h              = zeros_float(n6h)
-    surface_pressure_6h               = zeros(typeof(0.0u"Pa"),    n6h)
-    downward_shortwave_radiation_6h   = zeros(typeof(0.0u"W/m^2"), n6h)
-    longwave_radiation_6h             = zeros(typeof(0.0u"W/m^2"), n6h)
-    rainfall_6h                       = zeros(typeof(0.0u"kg/m^2"), n6h)
-    # Derived at 6h resolution before interpolation
-    wind_speed_6h                     = zeros(typeof(0.0u"m/s"),   n6h)
-    actual_vapour_pressure_6h         = zeros(typeof(0.0u"kPa"),   n6h)
+    output = _zero_buffers(_SERIES_OUTPUT, nout)
+    daily  = _zero_buffers(_SERIES_DAILY, ndays)
+    native = _zero_buffers((
+        :reference_temperature, :u_wind, :v_wind, :specific_humidity,
+        :surface_pressure, :downward_shortwave_radiation, :longwave_radiation,
+        :rainfall,
+        # derived at native timestep before resampling
+        :wind_speed, :actual_vapour_pressure,
+    ), nnat)
 
-    # Hourly canonical output buffers — shared with environment_hourly
-    reference_temperature = zeros(typeof(0.0u"K"),     nhours)
-    reference_humidity    = zeros_float(nhours)
-    wind_speed            = zeros(typeof(0.0u"m/s"),   nhours)
-    pressure              = zeros(typeof(0.0u"Pa"),    nhours)
-    cloud_cover           = zeros_float(nhours)
-    global_radiation      = zeros(typeof(0.0u"W/m^2"), nhours)
-    longwave_radiation    = zeros(typeof(0.0u"W/m^2"), nhours)
-    rainfall              = zeros(typeof(0.0u"kg/m^2"), nhours)
-    zenith_angle          = zeros(typeof(0.0u"°"),     nhours)
-    actual_vapour_pressure = zeros(typeof(0.0u"kPa"),  nhours)
+    environment_daily  = _environment_daily(ndays, daily.rainfall_daily, daily.deep_soil_temperature)
+    environment_hourly = _environment_hourly(output)
 
-    # Daily aggregate buffers — shared with environment_daily
-    rainfall_daily        = zeros(typeof(0.0u"kg/m^2"), ndays)
-    deep_soil_temperature = zeros(typeof(0.0u"K"),       ndays)
-    soil_moisture         = zeros_float(ndays)
-
-    environment_daily = DailyTimeseries(;
-        shade               = zeros_float(ndays),
-        soil_wetness        = zeros_float(ndays),
-        surface_emissivity  = fill(0.95, ndays),
-        cloud_emissivity    = fill(0.95, ndays),
-        rainfall            = rainfall_daily,
-        deep_soil_temperature,
-        leaf_area_index     = fill(0.1, ndays),
-    )
-    environment_hourly = HourlyTimeseries(;
-        pressure, reference_temperature, reference_humidity,
-        reference_wind_speed = wind_speed,
-        global_radiation, longwave_radiation, cloud_cover,
-        rainfall, zenith_angle,
-    )
-
-    return (;
-        # 6h staging
-        reference_temperature_6h, u_wind_6h, v_wind_6h,
-        specific_humidity_6h, surface_pressure_6h,
-        downward_shortwave_radiation_6h, longwave_radiation_6h, rainfall_6h,
-        wind_speed_6h, actual_vapour_pressure_6h,
-        # hourly output
-        reference_temperature, reference_humidity, wind_speed,
-        pressure, cloud_cover, global_radiation, longwave_radiation,
-        rainfall, zenith_angle, actual_vapour_pressure,
-        # daily
-        rainfall_daily, deep_soil_temperature, soil_moisture,
-        days_of_year,
-        environment_minmax = nothing,
-        environment_daily, environment_hourly,
-    )
+    return (; output..., native, daily..., days_of_year,
+        environment_minmax = nothing, environment_daily, environment_hourly)
 end
 
 # ---------------------------------------------------------------------------
@@ -917,13 +867,11 @@ Build `(environment_minmax, environment_daily, environment_hourly)` for one
 pixel of `weather` (a `RasterStack` loaded by `_load_weather(source, …)`).
 Works in place into the scratch buffers held by `scratch.weather`.
 
-  1. Read `source`'s native canonical variables (per `weather_variables`)
-     into the canonical buffers, applying native-unit tagging and any
-     source-specific transform.
-  2. Run `weather_derivations(source)`, skipping any output that the
-     source provides natively.
-  3. Compute site-only quantities (pressure) and swap a fresh pressure
-     `Fill` into the pre-built `environment_hourly` struct.
+Dispatches on `(native_timestep, target_timestep)` to one of three shapes
+(`_assemble!`): envelope (min/max), hourly-series in place, or native tier
++ `resample!` to the target. Each reads the native variables, runs the
+timestep-blind physics, and lays out the daily/hourly tiers the solver reads;
+then a fresh pressure `Fill` is swapped in for envelope-mode sources.
 """
 function assemble_weather!(
     scratch, weather,
@@ -934,21 +882,25 @@ function assemble_weather!(
     lapse_rate_model::LapseRate = EnvironmentalLapseRate(),
     canonical_overrides::NamedTuple = (;),
     wind_reference_height = 2.0u"m",
+    target_timestep::Timestep = Hourly(),
 )
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
     variables = weather_variables(source)
-    spy = steps_per_year(temporal_resolution(source))
+    cal = weather_calendar(source)
+    native = native_timestep(source)
 
     ctx = (;
         site, grid_elevation, lapse_rate_model, vapour_pressure_method,
         atmospheric_pressure = atm_pressure, scratch,
-        steps_per_year = spy,
+        # Per-step count, for the envelope-mode deep-soil annual mean.
+        steps_per_year = days_per_year(cal),
+        native_timestep = native, target_timestep,
         wind_reference_height,
     )
 
-    _read_native!(buffers, weather, variables, I)
-    _run_derivations!(buffers, ctx, source, variables, canonical_overrides)
+    _assemble!(native, target_timestep, buffers, weather, source, ctx, variables,
+               canonical_overrides, I)
     _apply_canonical_overrides!(buffers, canonical_overrides, I)
 
     environment_hourly = _finalize_environment_hourly(buffers, variables, atm_pressure)
@@ -956,14 +908,82 @@ function assemble_weather!(
     return (; buffers.environment_minmax, buffers.environment_daily, environment_hourly)
 end
 
-# In monthly/daily mode, pressure is constant per pixel and the env_hourly
-# struct's `pressure` field is a `Fill` derived from site elevation —
-# rebuild and swap in. In hourly/sub-daily mode the pressure array is either
-# loaded natively (ERA5 `:sp`) or interpolated from 6h staging buffers
-# (NCEP `surface_pressure_6h → pressure`), and must NOT be overwritten.
+# Three assembly shapes, dispatched on (native timestep, target timestep). Each
+# reads native variables, runs physics (timestep-blind), and lays out the daily
+# / hourly tiers the solver reads. Kind (which native variables, which physics)
+# is orthogonal to time (the timesteps here); time-shuffling is `resample!`.
+
+# Envelope sources (daily/monthly high-low): the solver draws the diel curve
+# from the per-step min/max, so there is nothing to resample.
+@inline function _assemble!(::MinMax, ::Timestep, buffers, weather, source, ctx,
+                            variables, overrides, I)
+    _read_native!(buffers, weather, variables, I)
+    _run_physics!(buffers, ctx, _ENVELOPE_PHYSICS, variables, overrides)
+    return nothing
+end
+
+# Native timestep already equals the target (hourly in, hourly out): physics on
+# the hourly buffers, then aggregate to the daily tier.
+@inline function _assemble!(::SubDaily{24}, ::SubDaily{24}, buffers, weather, source,
+                            ctx, variables, overrides, I)
+    _read_native!(buffers, weather, variables, I)
+    _run_physics!(buffers, ctx, _SERIES_PHYSICS, variables, overrides)
+    _resample!(buffers.rainfall_daily, buffers.rainfall, Accumulate(), 24)
+    _deep_soil_from_series!(buffers.deep_soil_temperature, buffers.reference_temperature)
+    return nothing
+end
+
+# Native timestep finer/coarser than target (e.g. NCEP six-hourly → hourly):
+# read into the native tier, derive the native combiners there, then resample
+# each quantity to the output tier by its `resampling_rule`.
+function _assemble!(native_step::SubDaily, target_step::SubDaily, buffers, weather, source,
+                    ctx, variables, overrides, I)
+    nin  = samples_per_day(native_step)
+    nout = samples_per_day(target_step)
+    native = buffers.native
+
+    _read_native!(native, weather, variables, I)
+    # Native-timestep combiners — the same physics functions used everywhere.
+    _wind_speed!(native.wind_speed, native.u_wind, native.v_wind)
+    _vapour_pressure_from_specific_humidity!(
+        native.actual_vapour_pressure, native.specific_humidity, native.surface_pressure)
+    # Hourly clear-sky baseline for the radiation disaggregation rule.
+    derive!(Val(:solar_geometry), buffers, ctx)
+
+    # Resample each quantity native → target by its own rule.
+    _resample!(buffers.reference_temperature, native.reference_temperature,
+               resampling_rule(Val(:reference_temperature)), nin, nout)
+    _resample!(buffers.wind_speed, native.wind_speed,
+               resampling_rule(Val(:wind_speed)), nin, nout)
+    _resample!(buffers.actual_vapour_pressure, native.actual_vapour_pressure,
+               resampling_rule(Val(:actual_vapour_pressure)), nin, nout)
+    _resample!(buffers.pressure, native.surface_pressure,
+               resampling_rule(Val(:pressure)), nin, nout)
+    _resample!(buffers.longwave_radiation, native.longwave_radiation,
+               resampling_rule(Val(:longwave_radiation)), nin, nout)
+    _resample!(buffers.global_radiation, native.downward_shortwave_radiation,
+               resampling_rule(Val(:global_radiation)), nin, nout,
+               ctx.scratch.solar.out.global_horizontal)
+
+    # Output-timestep physics.
+    shear = _wind_height_correction(ctx.wind_reference_height)
+    @. buffers.wind_speed *= shear
+    derive!(Val(:reference_humidity), buffers, ctx)
+
+    # Aggregate to the daily tier.
+    _resample!(buffers.rainfall_daily, native.rainfall, Accumulate(), nin)
+    _deep_soil_from_series!(buffers.deep_soil_temperature, buffers.reference_temperature)
+    return nothing
+end
+
+# In envelope (MinMax) mode, pressure is constant per pixel and the env_hourly
+# struct's `pressure` field is a `Fill` derived from site elevation — rebuild
+# and swap in. In sub-daily mode the pressure array is either loaded natively
+# (ERA5 `:sp`) or resampled from the native tier (NCEP surface pressure), and
+# must NOT be overwritten.
 #
 # The guard is `environment_minmax === nothing`: that flag is set exclusively
-# by hourly/sub-daily allocators, so it unambiguously identifies modes where
+# by the sub-daily allocators, so it unambiguously identifies modes where
 # `environment_hourly.pressure` is already a populated concrete array.
 @inline function _finalize_environment_hourly(buffers, variables, atm_pressure)
     buffers.environment_minmax === nothing && return buffers.environment_hourly
@@ -1002,9 +1022,13 @@ end
 # Derivation driver
 # ---------------------------------------------------------------------------
 
-@inline function _run_derivations!(buffers, ctx, source, variables::Tuple,
-                                   overrides::NamedTuple = (;))
-    unrolled_map(weather_derivations(source)) do v
+# Run a fixed physics chain, skipping any output the source provides natively
+# or the user overrides. The chain is a property of the solver-input shape
+# (envelope vs hourly series), not of the source — kind enters only through
+# the skip-if-native check.
+@inline function _run_physics!(buffers, ctx, chain::Tuple, variables::Tuple,
+                               overrides::NamedTuple = (;))
+    unrolled_map(chain) do v
         skip = _is_native(v, variables) || _is_override(v, overrides)
         skip || derive!(v, buffers, ctx)
         nothing
@@ -1079,18 +1103,6 @@ function derive!(::Val{:reference_temperature_min}, buffers, ctx)
                     buffers.minimum_temperature, ctx)
 end
 
-@inline function _lapse_correct!(out, src, ctx)
-    (; site, grid_elevation, lapse_rate_model) = ctx
-    Δz = site.elevation - grid_elevation
-    if iszero(Δz)
-        @. out = src
-    else
-        lr = lapse_rate(lapse_rate_model)   # scalar K/m — extract before broadcast
-        @. out = src - lr * Δz
-    end
-    return nothing
-end
-
 function derive!(::Val{:mean_temperature}, buffers, ctx)
     @. buffers.mean_temperature =
         (buffers.reference_temperature_max + buffers.reference_temperature_min) / 2
@@ -1104,11 +1116,8 @@ end
 # pressure. Result has units of pressure; auto-converted to kPa on
 # assignment to the canonical buffer.
 function derive!(::Val{:actual_vapour_pressure}, buffers, ctx)
-    @inbounds for k in eachindex(buffers.actual_vapour_pressure)
-        q = buffers.specific_humidity[k]
-        p = buffers.surface_pressure[k]
-        buffers.actual_vapour_pressure[k] = q * p / (0.622 + 0.378 * q)
-    end
+    _vapour_pressure_from_specific_humidity!(buffers.actual_vapour_pressure,
+        buffers.specific_humidity, buffers.surface_pressure)
     return nothing
 end
 
@@ -1145,7 +1154,7 @@ end
 # that provide horizontal wind as east-west and north-south components
 # rather than as a scalar speed.
 function derive!(::Val{:wind_speed}, buffers, ctx)
-    @. buffers.wind_speed = sqrt(buffers.u_wind^2 + buffers.v_wind^2)
+    _wind_speed!(buffers.wind_speed, buffers.u_wind, buffers.v_wind)
     return nothing
 end
 
@@ -1235,59 +1244,13 @@ function derive!(::Val{:reference_humidity}, buffers, ctx)
     return nothing
 end
 
-# Aggregate 24 hourly rainfall values into one daily total (kg/m²) for
-# env_daily.rainfall.
-# TODO: propagate hourly rainfall into Microclimate.jl. The solver should
-# consume the hourly array (`env_hourly.rainfall`) directly at the bottom
-# level rather than us pre-aggregating to daily totals here — that loses
-# sub-daily intensity information that affects soil infiltration / runoff.
-function derive!(::Val{:rainfall_daily_from_hourly}, buffers, ctx)
-    ndays = length(buffers.rainfall_daily)
-    @inbounds for d in 1:ndays
-        h0 = (d - 1) * 24
-        s = zero(eltype(buffers.rainfall))
-        for h in 1:24
-            s += buffers.rainfall[h0 + h]
-        end
-        buffers.rainfall_daily[d] = s
-    end
-    return nothing
-end
-
-# Annual mean of hourly reference_temperature, broadcast across all 365
-# daily entries of `deep_soil_temperature`.
-function derive!(::Val{:deep_soil_temperature_from_hourly}, buffers, ctx)
-    ndays  = length(buffers.deep_soil_temperature)
-    nhours = length(buffers.reference_temperature)
-    if ndays < 365
-        # Sub-annual run: fill with mean of all available hours.
-        run_mean = sum(buffers.reference_temperature) / nhours
-        fill!(buffers.deep_soil_temperature, run_mean)
-        return nothing
-    end
-    nyears = ndays ÷ 365
-    @inbounds for y in 1:nyears
-        h0 = (y - 1) * 8760
-        annual_sum = zero(eltype(buffers.reference_temperature))
-        for h in 1:8760
-            annual_sum += buffers.reference_temperature[h0 + h]
-        end
-        annual_mean = annual_sum / 8760
-        d0 = (y - 1) * 365
-        for d in 1:365
-            buffers.deep_soil_temperature[d0 + d] = annual_mean
-        end
-    end
-    return nothing
-end
-
 # ---------------------------------------------------------------------------
-# Sub-daily (6-hourly) derivations
+# Solar geometry (clear-sky baseline for the radiation resample rule)
 # ---------------------------------------------------------------------------
 
 # Run solar_radiation! to populate scratch.solar.out with hourly clear-sky
-# global_horizontal values for all days. Must be the first step in
-# _DERIVATIONS_6H_TO_1H so subsequent steps can read the clear-sky output.
+# global_horizontal values for all days. Called before the shortwave
+# `SolarDisaggregate` resample, which reads the clear-sky output.
 function derive!(::Val{:solar_geometry}, buffers, ctx)
     (; scratch, site) = ctx
     flat_terrain = setproperties(scratch.cloud_constants.flat_terrain_template,
@@ -1302,128 +1265,22 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
     return nothing
 end
 
-# Scalar wind speed from U/V components at 6h resolution (at source height, 10 m).
-function derive!(::Val{:wind_speed_6h}, buffers, _ctx)
-    @. buffers.wind_speed_6h = sqrt(buffers.u_wind_6h^2 + buffers.v_wind_6h^2)
-    return nothing
-end
-
-# Apply power-law height correction to the hourly wind_speed buffer after
-# interpolation from 6h. Separated from wind_speed_6h so each step has one concern.
-function derive!(::Val{:apply_wind_shear}, buffers, ctx)
-    shear = _wind_height_correction(ctx.wind_reference_height)
-    @. buffers.wind_speed *= shear
-    return nothing
-end
-
-# Actual vapour pressure from specific humidity + surface pressure at 6h resolution.
-function derive!(::Val{:actual_vapour_pressure_6h}, buffers, _ctx)
-    @inbounds for k in eachindex(buffers.actual_vapour_pressure_6h)
-        q = buffers.specific_humidity_6h[k]
-        p = buffers.surface_pressure_6h[k]
-        buffers.actual_vapour_pressure_6h[k] = q * p / (0.622 + 0.378 * q)
-    end
-    return nothing
-end
-
-# Linear interpolation helper: 1460 (4×365) 6-hourly values → 8760 hourly.
-# The four 6h blocks per day have their midpoints at hours 3, 9, 15, 21.
-# Values outside the first/last block boundary are clamped to the edge value.
-function _interp_6h_to_1h!(out::AbstractVector, src::AbstractVector)
-    ndays = length(src) ÷ 4
-    @inbounds for d in 1:ndays
-        k0 = (d - 1) * 4   # 0-based 6h offset
-        v1 = src[k0 + 1];  v2 = src[k0 + 2]
-        v3 = src[k0 + 3];  v4 = src[k0 + 4]
-        # Previous/next boundary values for interp across day boundaries
-        vp = d > 1    ? src[(d-2)*4 + 4] : v1
-        vn = d < ndays ? src[d*4 + 1]    : v4
-        h0 = (d - 1) * 24   # 0-based hour offset
-        for h in 0:23
-            hf = h + 0.5   # midpoint of each clock hour
-            local op::typeof(v1)
-            if hf < 3.0
-                t = (hf + 3.0) / 6.0   # 0 at h=-3 (prev centroid 21), 1 at h=3
-                op = vp * (1.0 - t) + v1 * t
-            elseif hf < 9.0
-                t = (hf - 3.0) / 6.0
-                op = v1 * (1.0 - t) + v2 * t
-            elseif hf < 15.0
-                t = (hf - 9.0) / 6.0
-                op = v2 * (1.0 - t) + v3 * t
-            elseif hf < 21.0
-                t = (hf - 15.0) / 6.0
-                op = v3 * (1.0 - t) + v4 * t
-            else
-                t = (hf - 21.0) / 6.0
-                op = v4 * (1.0 - t) + vn * t
-            end
-            out[h0 + h + 1] = op
-        end
-    end
-    return out
-end
-
-# Linearly interpolate met variables (T, wind, humidity, pressure, longwave)
-# from 6h to hourly. Uses _interp_6h_to_1h! for each variable.
-function derive!(::Val{:interpolate_met_6h_to_1h}, buffers, _ctx)
-    _interp_6h_to_1h!(buffers.reference_temperature,    buffers.reference_temperature_6h)
-    _interp_6h_to_1h!(buffers.wind_speed,               buffers.wind_speed_6h)
-    _interp_6h_to_1h!(buffers.actual_vapour_pressure,   buffers.actual_vapour_pressure_6h)
-    _interp_6h_to_1h!(buffers.pressure,                 buffers.surface_pressure_6h)
-    _interp_6h_to_1h!(buffers.longwave_radiation,       buffers.longwave_radiation_6h)
-    return nothing
-end
-
-# Solar-geometry-aware shortwave disaggregation from 6h to hourly.
-#
-# Algorithm (NicheMapR/microclima approach):
-#   For each 6h block, compute the clear-sky mean from scratch.solar.out.global_horizontal
-#   (populated by derive!(:solar_geometry)), then derive opacity = observed / clear_sky.
-#   Assign constant opacity within the block and multiply by the hourly clear-sky.
-#   Days where the clear-sky block mean is zero (polar night) get zero radiation.
-function derive!(::Val{:disaggregate_radiation_6h_to_1h}, buffers, ctx)
-    gh = ctx.scratch.solar.out.global_horizontal   # 24×ndays hourly clear-sky
-    ndays = length(buffers.days_of_year)           # 365 × nyears
-    @inbounds for d in 1:ndays
-        h0 = (d - 1) * 24   # 0-based index into gh (24 per day)
-        for b in 0:3         # 4 six-hour blocks per day
-            k6h = (d - 1) * 4 + b + 1   # 1-based 6h index
-            # Mean clear-sky over this 6h block (hours b*6+1 … b*6+6)
-            cs_sum = zero(eltype(gh))
-            for j in 1:6
-                cs_sum += gh[h0 + b*6 + j]
-            end
-            cs_mean = cs_sum / 6
-            obs = buffers.downward_shortwave_radiation_6h[k6h]
-            opacity = cs_mean <= zero(cs_mean) ? 0.0 :
-                clamp(ustrip(u"W/m^2", obs) / ustrip(u"W/m^2", cs_mean), 0.0, 1.0)
-            # Apply constant opacity to each hour in the block
-            for j in 1:6
-                hi = h0 + b*6 + j   # 1-based index into hourly arrays
-                buffers.global_radiation[hi] = opacity * gh[h0 + b*6 + j]
-            end
-        end
-    end
-    return nothing
-end
-
-# Sum 4 six-hourly rainfall accumulations per day into daily totals.
-function derive!(::Val{:rainfall_daily_from_6h}, buffers, _ctx)
-    ndays = length(buffers.rainfall_daily)
-    @inbounds for d in 1:ndays
-        k0 = (d - 1) * 4
-        buffers.rainfall_daily[d] = buffers.rainfall_6h[k0 + 1] +
-                                    buffers.rainfall_6h[k0 + 2] +
-                                    buffers.rainfall_6h[k0 + 3] +
-                                    buffers.rainfall_6h[k0 + 4]
-    end
-    return nothing
-end
-
 # ---------------------------------------------------------------------------
 # Helpers reused by derivations
 # ---------------------------------------------------------------------------
+#
+
+@inline function _lapse_correct!(out, src, ctx)
+    (; site, grid_elevation, lapse_rate_model) = ctx
+    Δz = site.elevation - grid_elevation
+    if iszero(Δz)
+        @. out = src
+    else
+        lr = lapse_rate(lapse_rate_model)   # scalar K/m — extract before broadcast
+        @. out = src - lr * Δz
+    end
+    return nothing
+end
 
 """
     _relative_humidity_from_vpd!(out, vapour_pressure_deficit,
@@ -1491,3 +1348,106 @@ function _annual_means!(out::AbstractVector,
     end
     return out
 end
+
+# ---------------------------------------------------------------------------
+# Date-range helpers
+# ---------------------------------------------------------------------------
+
+# Distinct solar-geometry days/year — sizes `scratch.solar.out`. Always the
+# calendar's day count, independent of timestep.
+@inline _solar_ndays_per_year(cal::Calendar) = days_per_year(cal)
+
+@inline _minmax_env_type(::Monthly) = MonthlyMinMaxEnvironment
+@inline _minmax_env_type(::Daily)   = DailyMinMaxEnvironment
+
+@inline _days_of_year(::Monthly, nyears) = repeat(Microclimate.DEFAULT_DAYS, nyears)
+@inline _days_of_year(::Daily,   nyears) = repeat(1:365, nyears)
+
+# Convert an old-style integer years range to a full-calendar Date range.
+_years_to_dates(years::AbstractRange{Int}) =
+    Date(first(years), 1, 1):Day(1):Date(last(years), 12, 31)
+
+# Derive the integer year span that must be loaded from weather sources to
+# cover all dates.
+_years_from_dates(d::Date)                 = year(d):year(d)
+_years_from_dates(r::AbstractRange{Date})  = minimum(year, r):maximum(year, r)
+
+# Day-of-year on the 365-day calendar (Feb 29 is dropped, so March 1 = doy 60
+# whether or not the year is a leap year).
+function _doy_noleap(d::Date)
+    doy = dayofyear(d)
+    isleapyear(year(d)) && d >= Date(year(d), 3, 1) && (doy -= 1)
+    return doy
+end
+
+_is_leapday(d::Date) = isleapyear(year(d)) && month(d) == 2 && day(d) == 29
+
+# Normalise user-supplied dates to a sorted Vector{Date}, dropping Feb 29
+# (consistent with the 365-day-per-year convention throughout).
+_normalise_dates(d::Date) = _is_leapday(d) ? Date[] : [d]
+function _normalise_dates(r::AbstractRange{Date})
+    v = filter(!_is_leapday, collect(r))
+    isempty(v) && error(
+        "No valid simulation dates remain after dropping Feb 29 " *
+        "(leap days are not yet supported).")
+    return v
+end
+
+# Compute the 1-based positional Ti range into the full-years weather stack,
+# and the day-of-year vector for the solver (one entry per unique day, or per
+# month for monthly sources). `dates_vec` must already be normalised (sorted,
+# no Feb 29). The Ti slice is in units of the *native* timestep — that is how
+# the loaded stack is laid out — so it is parameterised by `native_timestep`.
+function _ti_range_for_dates(::Monthly, ::Timestep, years, dates_vec::Vector{Date})
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 12 + month(start_d)
+    ti_end   = (yi_end   - 1) * 12 + month(end_d)
+    days_doy = Int[]
+    d = Date(year(start_d), month(start_d), 1)
+    stop = Date(year(end_d), month(end_d), 1)
+    while d <= stop
+        push!(days_doy, Microclimate.DEFAULT_DAYS[month(d)])
+        d += Month(1)
+    end
+    return ti_start, ti_end, days_doy
+end
+
+# Daily calendar: the native stack holds `spd = samples_per_day(native_timestep)`
+# steps per day (1 for MinMax, 24 for hourly, 4 for six-hourly). The returned
+# day-of-year vector always has one entry per calendar day — solar geometry and
+# derivations work at daily granularity regardless of sub-daily timestep.
+function _ti_range_for_dates(::Daily, native::Timestep, years, dates_vec::Vector{Date})
+    spd = samples_per_day(native)
+    start_d, end_d = minimum(dates_vec), maximum(dates_vec)
+    years_v = collect(years)
+    yi_start = findfirst(==(year(start_d)), years_v)
+    yi_end   = findfirst(==(year(end_d)),   years_v)
+    ti_start = (yi_start - 1) * 365 * spd + (_doy_noleap(start_d) - 1) * spd + 1
+    ti_end   = (yi_end   - 1) * 365 * spd + _doy_noleap(end_d) * spd
+    return ti_start, ti_end, _doy_noleap.(dates_vec)
+end
+
+# One "anchor" Date per solver step — used to carry the year when building
+# the output DateTime axis. Monthly: 1st of each selected month. Daily: the
+# dates_vec itself (already one per calendar day).
+function _step_anchor_dates(::Monthly, dates_vec::Vector{Date})
+    seen = Set{Tuple{Int,Int}}()
+    result = Date[]
+    for d in sort(dates_vec)
+        k = (year(d), month(d))
+        k in seen && continue
+        push!(seen, k)
+        push!(result, Date(year(d), month(d), 1))
+    end
+    return result
+end
+_step_anchor_dates(::Daily, dates_vec::Vector{Date}) = dates_vec
+
+# Monthly forcing → independent representative days (Fortran "monthly mode");
+# daily forcing → continuous run with state carrying day-to-day.
+@inline _time_mode(::Monthly) = Microclimate.NonConsecutiveDayMode()
+@inline _time_mode(::Daily)   = Microclimate.ConsecutiveDayMode()
+

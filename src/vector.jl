@@ -51,13 +51,15 @@ where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
 callers can recover coordinates via `lookup`/`val` or by indexing with
 `X(At(x)), Y(At(y))` selectors.
 """
-@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,DT<:Union{Date,AbstractRange{Date}},SP<:SoilProfile,IT,D<:NamedTuple}
+@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,DT<:Union{Date,AbstractRange{Date}},SP<:SoilProfile,IT,D<:NamedTuple,TC<:Timestep}
     model::M
     points::PT
     dates::DT
     soil_profile::SP
     init::IT = nothing
     data::D = (;)
+    # Target output timestep — the step within a day. Default hourly.
+    timestep::TC = Hourly()
 end
 
 # Positional-`model` convenience: `MicroVectorProblem(model; points, dates, ...)`.
@@ -174,11 +176,13 @@ function CommonSolve.init(problem::MicroVectorProblem)
 
     dates_vec = _normalise_dates(dates)
     years = _years_from_dates(dates)
-    resolution = temporal_resolution(weather_source)
-    ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
-    anchor_dates = _step_anchor_dates(resolution, dates_vec)
+    calendar = weather_calendar(weather_source)
+    native = native_timestep(weather_source)
+    target = problem.timestep
+    ti_start, ti_end, days_doy = _ti_range_for_dates(calendar, native, years, dates_vec)
+    anchor_dates = _step_anchor_dates(calendar, dates_vec)
 
-    @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
+    @info "init: weather source:   $(weather_source) ($(nameof(typeof(calendar))), $(nameof(typeof(native))) → $(nameof(typeof(target))))"
     @info "init: DEM source:       $(dem_source)"
     @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
     @info "init: roughness height: $(_source_label(roughness_height_source))"
@@ -225,7 +229,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
-        soil_profile,
+        soil_profile, target_timestep = target,
     )
 
     return MicroMapCache(

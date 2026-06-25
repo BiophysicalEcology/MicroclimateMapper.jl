@@ -8,7 +8,7 @@
 # rooting zone. Multiply by this scale to convert to volumetric water
 # content (m^3/m^3) given a 1000 mm rooting depth and 1.3/2.56 bulk-
 # density-to-particle-density ratio (NicheMapR convention).
-const _TERRACLIMATE_SOIL_TO_VOLUMETRIC = 1.0 / (1000.0 * (1.0 - 1.3 / 2.56))
+_terraclimate_soil_to_volumetric(raw) = raw / (1000.0 * (1.0 - 1.3 / 2.56))
 
 weather_loader(::Type{<:TerraClimate}) = YearlyTimeSeries()
 
@@ -20,7 +20,6 @@ function weather_variables(::Type{<:TerraClimate})
         WeatherVariable(:vapour_pressure_deficit, :vpd, u"kPa"),
         WeatherVariable(:downward_shortwave_radiation, :srad, u"W/m^2"),
         WeatherVariable(:rainfall, :ppt, u"kg/m^2"),
-        WeatherVariable(:soil_moisture, :soil, 1,
-                        raw -> raw * _TERRACLIMATE_SOIL_TO_VOLUMETRIC),
+        WeatherVariable(:soil_moisture, :soil, 1, _terraclimate_soil_to_volumetric),
     )
 end

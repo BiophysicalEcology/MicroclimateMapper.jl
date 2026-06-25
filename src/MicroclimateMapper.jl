@@ -46,8 +46,10 @@ export
     DryAdiabaticLapseRate,
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
-    # Weather sources
+    # Weather sources — `NCEP`/`SurfaceFlux` are re-exported from RasterDataSources
+    # (the data-source kind); the timestep is specified separately on the run.
     NCEP,
+    SurfaceFlux,
     # Microclimate drivers
     MicroMapModel,
     MicroRasterProblem,
@@ -77,7 +79,6 @@ include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
 include("climate/ncep.jl")
-include("climate/ncep_hourly.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")

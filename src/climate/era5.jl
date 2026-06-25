@@ -10,16 +10,17 @@
 # `zenith_angle` are shared storage with `environment_hourly`'s fields, so
 # writes via the canonical name surface in the struct.
 #
-# The hourly chain (`_DERIVATIONS_HOURLY`) handles four conversions:
+# Native timestep == target (hourly), so there is no resample. The series-shape
+# physics handle three conversions:
 #   * `wind_speed`              ← √(u_wind² + v_wind²)   (from `:u10`/`:v10`)
 #   * `actual_vapour_pressure`  ← e_s(dewpoint_temperature) (from `:d2m`)
 #   * `reference_humidity`      ← actual_VP / e_s(reference_temperature)
-#   * `rainfall_daily_from_hourly` and `deep_soil_temperature_from_hourly`
-#     aggregate hourly canonicals into the daily `environment_daily` fields.
+# The assembler then aggregates the hourly canonicals into the daily
+# `environment_daily` fields (rainfall total, deep-soil annual mean).
 
-temporal_resolution(::Type{<:ERA5}) = HourlyResolution()
+weather_calendar(::Type{<:ERA5}) = Daily()
+native_timestep(::Type{<:ERA5}) = Hourly()
 weather_loader(::Type{<:ERA5}) = HourlyZarrStore()
-weather_derivations(::Type{<:ERA5}) = _DERIVATIONS_HOURLY
 
 function weather_variables(::Type{<:ERA5})
     (
