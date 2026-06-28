@@ -69,3 +69,12 @@ function _load_dem(::Type{CRUCL2}, area::Extent)
                          to = buffered, touches = true))
     return Rasters.replace_missing(elv, 0)
 end
+
+# load_template for CRUCL2: uses the :elv band from the single NetCDF as the
+# run grid. The generic load_template passes extent as an RDS keyword which
+# doesn't work for file-path-based sources; dispatch here loads :elv directly.
+load_template(::Type{CRUCL2}, site::GeocodeResult) = load_template(CRUCL2, site.extent)
+function load_template(::Type{CRUCL2}, extent::Extent)
+    path = getraster(CRUCL2)
+    read(crop(Raster(path; name = :elv, lazy = true); to = extent, touches = true))
+end
