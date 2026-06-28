@@ -66,7 +66,8 @@ export
     SOLAR_BROADBAND,
     SOLAR_PAR,
     SOLAR_UVB,
-    SOLAR_NIR
+    SOLAR_NIR,
+    # Geocoding utilities
     geocode,
     GeocodeResult,
     load_template
