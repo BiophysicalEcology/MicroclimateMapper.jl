@@ -18,7 +18,7 @@ function weather_variables(::Type{<:CHELSA{Climate}})
         WeatherVariable(:maximum_temperature, :tasmax, u"°C"),
         WeatherVariable(:minimum_temperature, :tasmin, u"°C"),
         WeatherVariable(:wind_speed, :sfcWind, u"m/s"),
-        WeatherVariable(:downward_shortwave_radiation, :rsds, u"W/m^2"),
+        WeatherVariable(:global_radiation, :rsds, u"W/m^2"),
         WeatherVariable(:rainfall, :pr, u"kg/m^2"),
         # CHELSA gives a single mean RH — use it for both reference_humidity
         # min and max so the VPD-based derivation is skipped on both ends.
@@ -47,7 +47,7 @@ function weather_variables(::Type{<:CHELSA{<:Future{Climate}}})
         WeatherVariable(:rainfall, :prec, u"kg/m^2"),
         # Fallback fields from the CHELSA{Climate} 1981-2010 baseline:
         WeatherVariable(:wind_speed, :sfcWind, u"m/s"),
-        WeatherVariable(:downward_shortwave_radiation, :rsds, u"W/m^2"),
+        WeatherVariable(:global_radiation, :rsds, u"W/m^2"),
         WeatherVariable(:reference_humidity_min, :hurs, 1, percent_to_fraction),
         WeatherVariable(:reference_humidity_max, :hurs, 1, percent_to_fraction),
         WeatherVariable(:cloud_cover, :clt, 1, percent_to_fraction),

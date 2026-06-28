@@ -18,7 +18,7 @@ function weather_variables(::Type{<:TerraClimate})
         WeatherVariable(:minimum_temperature, :tmin, u"°C"),
         WeatherVariable(:wind_speed, :ws, u"m/s"),
         WeatherVariable(:vapour_pressure_deficit, :vpd, u"kPa"),
-        WeatherVariable(:downward_shortwave_radiation, :srad, u"W/m^2"),
+        WeatherVariable(:global_radiation, :srad, u"W/m^2"),
         WeatherVariable(:rainfall, :ppt, u"kg/m^2"),
         WeatherVariable(:soil_moisture, :soil, 1, _terraclimate_soil_to_volumetric),
     )

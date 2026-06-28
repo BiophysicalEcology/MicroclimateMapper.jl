@@ -511,19 +511,30 @@ const _ENVELOPE_PHYSICS = (
     Val(:reference_humidity_min),    # ← from VPD + ref_temp_max
     Val(:reference_wind_max),        # ← wind_speed × shear_factor
     Val(:reference_wind_min),        # ← ref_wind_max × 0.1
-    Val(:cloud_cover),               # ← from downward_shortwave_radiation
+    Val(:cloud_cover),               # ← from global_radiation
     Val(:cloud_min),                 # ← cloud_cover × 0.5 clamp
     Val(:cloud_max),                 # ← cloud_cover × 2.0 clamp
     Val(:deep_soil_temperature),     # ← annual mean of mean_temperature
 )
 
-# Hourly-series shape (sources whose within-day samples feed env_hourly
-# directly). The daily tier is filled by `resample!`/`_deep_soil_from_series!`
-# in the assembler, not here.
-const _SERIES_PHYSICS = (
-    Val(:wind_speed),                            # u/v → wind speed
-    Val(:actual_vapour_pressure_from_dewpoint),  # T_dew → actual_VP
-    Val(:reference_humidity),                    # actual_VP + T → RH
+# Series shapes (within-day samples). The native combiners run on the native
+# tier (before resampling); the output physics run on the output tier (after).
+# `solar_geometry` prepares the clear-sky baseline the shortwave resample reads.
+const _NATIVE_PHYSICS = (
+    Val(:solar_geometry),         # populate clear-sky for the shortwave rule
+    Val(:wind_speed),             # u/v → wind speed
+    Val(:actual_vapour_pressure), # specific-humidity·p or dewpoint → actual VP
+)
+const _OUTPUT_PHYSICS = (
+    Val(:apply_wind_shear),       # measurement height → reference height
+    Val(:reference_humidity),     # actual_VP + T → RH
+    Val(:deep_soil_temperature),  # annual mean of air temperature
+    Val(:rainfall_daily),         # accumulate the finest rainfall → daily total
+)
+# Hourly sources (native == output): all physics on the output tier, no resample.
+const _HOURLY_PHYSICS = (
+    Val(:wind_speed), Val(:actual_vapour_pressure),
+    _OUTPUT_PHYSICS...,
 )
 
 # ---------------------------------------------------------------------------
@@ -546,7 +557,6 @@ struct Accumulate <: ResamplingRule end
 
 @inline resampling_rule(::Val) = Interpolate()
 @inline resampling_rule(::Val{:global_radiation}) = SolarDisaggregate()
-@inline resampling_rule(::Val{:downward_shortwave_radiation}) = SolarDisaggregate()
 @inline resampling_rule(::Val{:rainfall}) = Accumulate()
 
 # Native sample `i` (0-based) of day `d`, clamping across day boundaries to the
@@ -618,6 +628,34 @@ function _resample!(daily, src, ::Accumulate, nin::Int)
     return daily
 end
 
+# Carry every output quantity that also exists in the native tier from native to
+# output, each by its own `resampling_rule`. Output-only quantities (no native
+# source) and `Accumulate` quantities (which target the daily tier, via
+# `derive!(:rainfall_daily)`) are left to the physics chains. Driven entirely by
+# the rule trait — no quantity is named here.
+@inline function _resample_to_output!(buffers, nin::Int, nout::Int, ctx)
+    native = buffers.native
+    map(_SERIES_OUTPUT) do name
+        _resample_quantity!(buffers, native, Val(name), nin, nout, ctx)
+    end
+    return nothing
+end
+
+@inline function _resample_quantity!(buffers, native, ::Val{name}, nin, nout, ctx) where {name}
+    hasproperty(native, name) || return nothing
+    _resample_by_rule!(getproperty(buffers, name), getproperty(native, name),
+                       resampling_rule(Val(name)), nin, nout, ctx)
+    return nothing
+end
+
+@inline _resample_by_rule!(out, src, rule::Interpolate, nin, nout, ctx) =
+    _resample!(out, src, rule, nin, nout)
+@inline _resample_by_rule!(out, src, rule::SolarDisaggregate, nin, nout, ctx) =
+    _resample!(out, src, rule, nin, nout, ctx.scratch.solar.out.global_horizontal)
+# Accumulate quantities target the daily tier, not the output tier — handled by
+# `derive!(:rainfall_daily)`, so skip them here.
+@inline _resample_by_rule!(out, src, ::Accumulate, nin, nout, ctx) = nothing
+
 # ---------------------------------------------------------------------------
 # Shared physics combiners — one implementation, called at any timestep
 # ---------------------------------------------------------------------------
@@ -637,31 +675,29 @@ function _vapour_pressure_from_specific_humidity!(out, q, p)
     return out
 end
 
-# Deep-soil temperature: annual mean of a temperature series, broadcast across
-# the daily entries. `series` is hourly (365×24/year) or per-day; both reduce
-# to a per-year mean replicated to each day.
-function _deep_soil_from_series!(out_daily, series)
-    ndays = length(out_daily)
-    nseries = length(series)
-    if ndays < 365
-        fill!(out_daily, sum(series) / nseries)
-        return out_daily
-    end
-    spd = nseries ÷ ndays
-    nyears = ndays ÷ 365
+# Annual mean of a temperature `series`, replicated across each year's entries of
+# `out`. `out_per_year` is the number of `out` entries per simulated year (12
+# monthly, 365 daily); the year count comes from that, and the series is split
+# into the same number of years. A sub-annual run collapses to one block (mean of
+# everything). Serves both the envelope mean (out and series same length) and the
+# hourly series (series is 24× out).
+function _deep_soil!(out, series, out_per_year)
+    nyears = max(1, length(out) ÷ out_per_year)
+    out_per = length(out) ÷ nyears
+    series_per = length(series) ÷ nyears
     @inbounds for y in 1:nyears
-        s0 = (y - 1) * 365 * spd
-        annual_sum = zero(eltype(series))
-        for k in 1:(365 * spd)
-            annual_sum += series[s0 + k]
+        s = zero(eltype(series))
+        sb = (y - 1) * series_per
+        for k in 1:series_per
+            s += series[sb + k]
         end
-        annual_mean = annual_sum / (365 * spd)
-        d0 = (y - 1) * 365
-        for d in 1:365
-            out_daily[d0 + d] = annual_mean
+        m = s / series_per
+        ob = (y - 1) * out_per
+        for d in 1:out_per
+            out[ob + d] = m
         end
     end
-    return out_daily
+    return out
 end
 
 # ---------------------------------------------------------------------------
@@ -704,11 +740,9 @@ working_units(::Val{:v_wind})                       = u"m/s"
 working_units(::Val{:wind_speed})                   = u"m/s"
 working_units(::Val{:reference_wind_min})           = u"m/s"
 working_units(::Val{:reference_wind_max})           = u"m/s"
-working_units(::Val{:surface_pressure})             = u"Pa"
 working_units(::Val{:pressure})                     = u"Pa"
 working_units(::Val{:actual_vapour_pressure})       = u"kPa"
 working_units(::Val{:vapour_pressure_deficit})      = u"kPa"
-working_units(::Val{:downward_shortwave_radiation}) = u"W/m^2"
 working_units(::Val{:global_radiation})             = u"W/m^2"
 working_units(::Val{:longwave_radiation})           = u"W/m^2"
 working_units(::Val{:rainfall})                     = u"kg/m^2"
@@ -767,9 +801,9 @@ const _ENVELOPE_BUFFERS = (
     :reference_temperature_min, :reference_temperature_max,
     :wind_speed, :u_wind, :v_wind, :reference_wind_min, :reference_wind_max,
     :vapour_pressure_deficit, :actual_vapour_pressure,
-    :specific_humidity, :surface_pressure,
+    :specific_humidity, :pressure,
     :reference_humidity_min, :reference_humidity_max,
-    :downward_shortwave_radiation, :cloud_cover, :cloud_min, :cloud_max,
+    :global_radiation, :cloud_cover, :cloud_min, :cloud_max,
     :rainfall, :deep_soil_temperature, :soil_moisture,
 )
 
@@ -843,7 +877,7 @@ function _allocate_weather_buffers(::Calendar, native_step::SubDaily, target_ste
     daily  = _zero_buffers(_SERIES_DAILY, ndays)
     native = _zero_buffers((
         :reference_temperature, :u_wind, :v_wind, :specific_humidity,
-        :surface_pressure, :downward_shortwave_radiation, :longwave_radiation,
+        :pressure, :global_radiation, :longwave_radiation,
         :rainfall,
         # derived at native timestep before resampling
         :wind_speed, :actual_vapour_pressure,
@@ -893,7 +927,8 @@ function assemble_weather!(
     ctx = (;
         site, grid_elevation, lapse_rate_model, vapour_pressure_method,
         atmospheric_pressure = atm_pressure, scratch,
-        # Per-step count, for the envelope-mode deep-soil annual mean.
+        days_of_year = buffers.days_of_year,
+        # Output day count per year, for the deep-soil annual mean.
         steps_per_year = days_per_year(cal),
         native_timestep = native, target_timestep,
         wind_reference_height,
@@ -922,57 +957,24 @@ end
     return nothing
 end
 
-# Native timestep already equals the target (hourly in, hourly out): physics on
-# the hourly buffers, then aggregate to the daily tier.
+# Native timestep already equals the target (hourly in, hourly out): all physics
+# on the output buffers, no native tier and no resample.
 @inline function _assemble!(::SubDaily{24}, ::SubDaily{24}, buffers, weather, source,
                             ctx, variables, overrides, I)
     _read_native!(buffers, weather, variables, I)
-    _run_physics!(buffers, ctx, _SERIES_PHYSICS, variables, overrides)
-    _resample!(buffers.rainfall_daily, buffers.rainfall, Accumulate(), 24)
-    _deep_soil_from_series!(buffers.deep_soil_temperature, buffers.reference_temperature)
+    _run_physics!(buffers, ctx, _HOURLY_PHYSICS, variables, overrides)
     return nothing
 end
 
-# Native timestep finer/coarser than target (e.g. NCEP six-hourly → hourly):
-# read into the native tier, derive the native combiners there, then resample
-# each quantity to the output tier by its `resampling_rule`.
+# Native timestep differs from the target (e.g. NCEP six-hourly → hourly): read
+# into the native tier, run the native combiners there, resample every shared
+# quantity to the output tier by its rule, then the output physics.
 function _assemble!(native_step::SubDaily, target_step::SubDaily, buffers, weather, source,
                     ctx, variables, overrides, I)
-    nin  = samples_per_day(native_step)
-    nout = samples_per_day(target_step)
-    native = buffers.native
-
-    _read_native!(native, weather, variables, I)
-    # Native-timestep combiners — the same physics functions used everywhere.
-    _wind_speed!(native.wind_speed, native.u_wind, native.v_wind)
-    _vapour_pressure_from_specific_humidity!(
-        native.actual_vapour_pressure, native.specific_humidity, native.surface_pressure)
-    # Hourly clear-sky baseline for the radiation disaggregation rule.
-    derive!(Val(:solar_geometry), buffers, ctx)
-
-    # Resample each quantity native → target by its own rule.
-    _resample!(buffers.reference_temperature, native.reference_temperature,
-               resampling_rule(Val(:reference_temperature)), nin, nout)
-    _resample!(buffers.wind_speed, native.wind_speed,
-               resampling_rule(Val(:wind_speed)), nin, nout)
-    _resample!(buffers.actual_vapour_pressure, native.actual_vapour_pressure,
-               resampling_rule(Val(:actual_vapour_pressure)), nin, nout)
-    _resample!(buffers.pressure, native.surface_pressure,
-               resampling_rule(Val(:pressure)), nin, nout)
-    _resample!(buffers.longwave_radiation, native.longwave_radiation,
-               resampling_rule(Val(:longwave_radiation)), nin, nout)
-    _resample!(buffers.global_radiation, native.downward_shortwave_radiation,
-               resampling_rule(Val(:global_radiation)), nin, nout,
-               ctx.scratch.solar.out.global_horizontal)
-
-    # Output-timestep physics.
-    shear = _wind_height_correction(ctx.wind_reference_height)
-    @. buffers.wind_speed *= shear
-    derive!(Val(:reference_humidity), buffers, ctx)
-
-    # Aggregate to the daily tier.
-    _resample!(buffers.rainfall_daily, native.rainfall, Accumulate(), nin)
-    _deep_soil_from_series!(buffers.deep_soil_temperature, buffers.reference_temperature)
+    _read_native!(buffers.native, weather, variables, I)
+    _run_physics!(buffers.native, ctx, _NATIVE_PHYSICS, variables, overrides)
+    _resample_to_output!(buffers, samples_per_day(native_step), samples_per_day(target_step), ctx)
+    _run_physics!(buffers, ctx, _OUTPUT_PHYSICS, variables, overrides)
     return nothing
 end
 
@@ -1115,9 +1117,21 @@ end
 # where q is specific humidity (kg/kg, dimensionless) and p is surface
 # pressure. Result has units of pressure; auto-converted to kPa on
 # assignment to the canonical buffer.
+# Actual vapour pressure, by whichever inputs the tier carries: dewpoint (ERA5)
+# → e_s(T_dew); otherwise specific humidity + pressure (NCEP, envelope sources).
+# `hasproperty` folds to a constant for each concrete buffer tier, so the unused
+# branch is eliminated.
 function derive!(::Val{:actual_vapour_pressure}, buffers, ctx)
-    _vapour_pressure_from_specific_humidity!(buffers.actual_vapour_pressure,
-        buffers.specific_humidity, buffers.surface_pressure)
+    if hasproperty(buffers, :dewpoint_temperature)
+        method = ctx.vapour_pressure_method
+        @inbounds for k in eachindex(buffers.actual_vapour_pressure)
+            buffers.actual_vapour_pressure[k] =
+                vapour_pressure(method, buffers.dewpoint_temperature[k])
+        end
+    else
+        _vapour_pressure_from_specific_humidity!(buffers.actual_vapour_pressure,
+            buffers.specific_humidity, buffers.pressure)
+    end
     return nothing
 end
 
@@ -1185,7 +1199,7 @@ function derive!(::Val{:cloud_cover}, buffers, ctx)
            site.latitude, site.longitude),
     )
     cloud_from_solar_radiation!(buffers.cloud_cover, scratch.solar.out,
-        buffers.downward_shortwave_radiation, flat_terrain, buffers.days_of_year,
+        buffers.global_radiation, flat_terrain, buffers.days_of_year,
         scratch.solar.buffers;
         solar_model = scratch.cloud_constants.solar_model,
         hours = scratch.cloud_constants.hours,
@@ -1203,31 +1217,39 @@ function derive!(::Val{:cloud_max}, buffers, ctx)
     return nothing
 end
 
+# Deep-soil temperature: the annual mean of the tier's air temperature
+# (`reference_temperature` where present, else `mean_temperature`), replicated
+# across that year's output days. `ctx.steps_per_year` is the output day count
+# per year, so this serves monthly, daily, and hourly tiers alike.
 function derive!(::Val{:deep_soil_temperature}, buffers, ctx)
-    spy = ctx.steps_per_year
-    nyears = length(buffers.mean_temperature) ÷ spy
-    _annual_means!(buffers.deep_soil_temperature,
-                   buffers.mean_temperature, nyears, spy)
+    _deep_soil!(buffers.deep_soil_temperature, _air_temperature(buffers), ctx.steps_per_year)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Hourly-mode derivations
-# ---------------------------------------------------------------------------
+@inline _air_temperature(b) =
+    hasproperty(b, :reference_temperature) ? b.reference_temperature : b.mean_temperature
 
-# Actual vapour pressure from 2 m dewpoint temperature (ERA5):
-# at the dewpoint, the air is saturated → actual vapour pressure equals
-# saturation vapour pressure at the dewpoint.
-function derive!(::Val{:actual_vapour_pressure_from_dewpoint}, buffers, ctx)
-    method = ctx.vapour_pressure_method
-    @inbounds for k in eachindex(buffers.actual_vapour_pressure)
-        buffers.actual_vapour_pressure[k] =
-            vapour_pressure(method, buffers.dewpoint_temperature[k])
+# Accumulate the finest rainfall the tiers carry (native if present, else the
+# output buffer) into the daily total.
+function derive!(::Val{:rainfall_daily}, buffers, ctx)
+    if hasproperty(buffers, :native)
+        _resample!(buffers.rainfall_daily, buffers.native.rainfall,
+                   Accumulate(), samples_per_day(ctx.native_timestep))
+    else
+        _resample!(buffers.rainfall_daily, buffers.rainfall, Accumulate(), 24)
     end
     return nothing
 end
 
-# Single-value hourly relative humidity:
+# Power-law height correction of the (resampled) wind speed, in place on the
+# output tier: measurement height → reference height.
+function derive!(::Val{:apply_wind_shear}, buffers, ctx)
+    shear = _wind_height_correction(ctx.wind_reference_height)
+    @. buffers.wind_speed *= shear
+    return nothing
+end
+
+# Single-value relative humidity:
 #   RH = actual_VP / saturation_VP(reference_temperature)
 # Output clamped to [0, 1].
 function derive!(::Val{:reference_humidity}, buffers, ctx)
@@ -1260,7 +1282,7 @@ function derive!(::Val{:solar_geometry}, buffers, ctx)
     solar_radiation!(scratch.solar.out, scratch.solar.buffers,
         scratch.cloud_constants.solar_model;
         solar_terrain = flat_terrain,
-        days  = buffers.days_of_year,
+        days  = ctx.days_of_year,
         hours = scratch.cloud_constants.hours)
     return nothing
 end
@@ -1314,37 +1336,6 @@ function _relative_humidity_from_vpd!(
         saturation_at_reference = vapour_pressure(method, reference_temperature[k])
         out[k] = saturation_at_reference <= zero(saturation_at_reference) ? 1.0 :
                  clamp(actual / saturation_at_reference, 0.0, 1.0)
-    end
-    return out
-end
-
-"""
-    _annual_means!(out, values, nyears, steps_per_year)
-
-For each of `nyears` years (`steps_per_year` consecutive entries), every
-entry within the year gets replaced by that year's annual mean. Used to
-build `deep_soil_temperature` for both monthly (`steps_per_year = 12`) and
-daily (`steps_per_year = 365`) resolutions.
-"""
-function _annual_means!(out::AbstractVector,
-                        values::AbstractVector,
-                        nyears::Int,
-                        steps_per_year::Int)
-    if nyears == 0
-        # Sub-annual run: fill with mean of all available steps.
-        run_mean = sum(values) / length(values)
-        fill!(out, run_mean)
-        return out
-    end
-    @inbounds for y in 1:nyears
-        annual_sum = zero(eltype(values))
-        for k in 1:steps_per_year
-            annual_sum += values[(y - 1) * steps_per_year + k]
-        end
-        annual_mean = annual_sum / steps_per_year
-        for k in 1:steps_per_year
-            out[(y - 1) * steps_per_year + k] = annual_mean
-        end
     end
     return out
 end

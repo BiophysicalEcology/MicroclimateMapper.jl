@@ -24,7 +24,7 @@ function weather_variables(::Type{<:WorldClim{Climate}})
         WeatherVariable(:wind_speed, :wind, u"m/s"),
         # WorldClim radiation is kJ/(m^2·day); Unitful converts to W/m^2 on
         # assignment to the canonical buffer (`Quantity{W/m^2}`).
-        WeatherVariable(:downward_shortwave_radiation, :srad, u"kJ/m^2/d"),
+        WeatherVariable(:global_radiation, :srad, u"kJ/m^2/d"),
         # `:prec` is mm depth; 1 mm of rainfall ≡ 1 kg/m^2.
         WeatherVariable(:rainfall, :prec, u"kg/m^2"),
         # `:vapr` is actual vapour pressure — feeds the VPD-from-actual
@@ -50,7 +50,7 @@ function weather_variables(::Type{<:WorldClim{<:Future{Climate}}})
         WeatherVariable(:rainfall, :prec, u"kg/m^2"),
         # Fallback fields from the WorldClim{Climate} 1970-2000 baseline:
         WeatherVariable(:wind_speed, :wind, u"m/s"),
-        WeatherVariable(:downward_shortwave_radiation, :srad, u"kJ/m^2/d"),
+        WeatherVariable(:global_radiation, :srad, u"kJ/m^2/d"),
         WeatherVariable(:actual_vapour_pressure, :vapr, u"kPa"),
     )
 end

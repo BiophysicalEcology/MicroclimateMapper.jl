@@ -40,8 +40,8 @@ function weather_variables(::Type{<:NCEP{<:SurfaceFlux}})
         WeatherVariable(:u_wind,                       :uwnd_10m, u"m/s"),
         WeatherVariable(:v_wind,                       :vwnd_10m, u"m/s"),
         WeatherVariable(:specific_humidity,            :shum_2m,  1),
-        WeatherVariable(:surface_pressure,             :pres,     u"Pa"),
-        WeatherVariable(:downward_shortwave_radiation, :dswrf,    u"W/m^2"),
+        WeatherVariable(:pressure,                     :pres,     u"Pa"),
+        WeatherVariable(:global_radiation,             :dswrf,    u"W/m^2"),
         WeatherVariable(:longwave_radiation,           :dlwrf,    u"W/m^2"),
         # prate is kg/m²/s; × 6 h × 3600 s/h → kg/m² per 6 h block.
         WeatherVariable(:rainfall,                     :prate,    u"kg/m^2",

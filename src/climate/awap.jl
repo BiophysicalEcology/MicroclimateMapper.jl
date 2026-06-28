@@ -20,7 +20,7 @@ function weather_variables(::Type{<:AWAP})
         WeatherVariable(:rainfall, :rainfall, u"kg/m^2"),
         # AWAP solar is MJ/(m^2·day); Unitful converts to W/m^2 on
         # assignment to the canonical buffer.
-        WeatherVariable(:downward_shortwave_radiation, :solar, u"MJ/m^2/d"),
+        WeatherVariable(:global_radiation, :solar, u"MJ/m^2/d"),
         # 09:00 vapour pressure in hPa — converted to kPa on assignment.
         # TODO: when a multi-input merge step exists, average with
         # `:vprpress15` for a true daily-mean actual vapour pressure.
