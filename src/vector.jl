@@ -223,23 +223,13 @@ function CommonSolve.init(problem::MicroVectorProblem)
     weather = if model.solar_only && !model.cloud_correct_solar
         RasterStack()
     else
-        # DEM: `_load_dem` adds its own buffer (e.g. 0.3° for SRTM) so horizon
-        # ray sweeps have room. Terrain is computed at native DEM resolution
-        # (template = nothing) — slope / aspect / horizon vectors carry full
-        # relief; per-point Near extraction picks the value at each point.
         weather_area = Extents.buffer(area,
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
         weather_native = _resolve_weather(data, weather_source, weather_area, years)
         # Slice to the requested date range before per-point extraction —
         # positional Ti indexing works for both integer and DateTime Ti axes.
         weather_native = weather_native[Ti(ti_start:ti_end)]
-        dem_native = _resolve_dem(data, dem_source, area)
-        terrain_native = model.compute_terrain ?
-            compute_terrain_grids(dem_native; template = nothing, n_horizon_angles = N_HORIZON_ANGLES) :
-            _flat_terrain_stack(dem_native, N_HORIZON_ANGLES)
-
-        weather = _stack_to_points(weather_native, points_dim)
-        terrain = _stack_to_points(terrain_native, points_dim)
+        _stack_to_points(weather_native, points_dim)
     end
 
     albedo_data = get(data, :surface_albedo, nothing)
