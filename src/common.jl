@@ -400,6 +400,13 @@ function _build_inputs_and_pool(;
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
+    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))"
+    @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
+    @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
+    @info "model: threads:         $(Threads.nthreads())"
+
     resolution = temporal_resolution(weather_source)
     # `solar_ndays` is the number of distinct solar-geometry days per year —
     # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
@@ -483,6 +490,7 @@ function _build_inputs_and_pool(;
     end
 
     first_I = _first_active_index(terrain.elevation, nothing, weather, canonical_overrides)
+    npixels = length(terrain.elevation)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
          scratch)

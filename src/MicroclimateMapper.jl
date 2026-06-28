@@ -1,8 +1,11 @@
 module MicroclimateMapper
 
 using Dates
+using Downloads
 using Statistics: mean
 
+using JSON3
+using URIs
 using Unitful
 
 using Microclimate
@@ -64,7 +67,11 @@ export
     SOLAR_PAR,
     SOLAR_UVB,
     SOLAR_NIR
+    geocode,
+    GeocodeResult,
+    load_template
 
+include("utils/geocode.jl")
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
