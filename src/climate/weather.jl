@@ -312,6 +312,16 @@ WorldClim{Future{Climate}}. `getraster(source, name; date = future_date)`.
 struct MultiBandFutureClimatology <: WeatherLoader end
 
 """
+    SingleFileClimatology
+
+A fixed 12-month climatology stored in one file containing all variables.
+`getraster(source)` (no per-field argument) returns the file path; all
+`fields` are extracted from it simultaneously as a `RasterStack` and tiled
+to `12 * nyears`. Used by CRUCL2.
+"""
+struct SingleFileClimatology <: WeatherLoader end
+
+"""
     DailyFiles
 
 One file per day per layer — the source ships one 2-D raster per calendar
@@ -337,7 +347,7 @@ struct HourlyZarrStore <: WeatherLoader end
 
 Singleton declaring how this source's files are organised. One of
 `YearlyTimeSeries`, `MonthlyClimatology`, `FutureMonthlyClimatology`,
-`MultiBandFutureClimatology`.
+`MultiBandFutureClimatology`, `SingleFileClimatology`.
 """
 function weather_loader end
 
@@ -497,6 +507,21 @@ function _load_layers(::MultiBandFutureClimatology, source, fields::Tuple,
         tiled = nyears == 1 ? data : repeat(data; outer = (1, 1, nyears))
         spatial_dims = dims(full)[1:2]
         Raster(tiled, (spatial_dims..., Ti(1:(12 * nyears))); crs = crs(full))
+    end
+    return NamedTuple{fields}(layers)
+end
+
+function _load_layers(::SingleFileClimatology, source, fields::Tuple, area::Extent, years)
+    nyears = length(years)
+    path = getraster(source)
+    raw = read(crop(RasterStack(path; name = fields, lazy = true); to = area, touches = true))
+    layers = map(fields) do name
+        lyr = raw[name]
+        data = parent(lyr)
+        size(data, 3) == 12 || error(
+            "$source: expected 12 months in layer :$name, got $(size(data, 3))")
+        tiled = nyears == 1 ? data : repeat(data; outer = (1, 1, nyears))
+        Raster(tiled, (dims(lyr)[1:2]..., Ti(1:(12 * nyears))); crs = crs(lyr))
     end
     return NamedTuple{fields}(layers)
 end

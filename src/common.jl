@@ -92,7 +92,9 @@ end
                     surface_albedo_source=nothing,
                     roughness_height_source=nothing,
                     output_layers=_DEFAULT_OUTPUT_LAYERS,
-                    lapse_rate_model=EnvironmentalLapseRate())
+                    lapse_rate_model=EnvironmentalLapseRate(),
+                    solar_only=false,
+                    solar_output_layers=())
 
 Declarative description of a microclimate run. Constant across spatial
 extents and time ranges — pair with a `MicroRasterProblem` (grid) or
@@ -111,19 +113,34 @@ extents and time ranges — pair with a `MicroRasterProblem` (grid) or
     * a `Type{<:RasterDataSource}` (load a property raster directly)
 - `output_layers` — tuple of `LayerSpec`s controlling which output rasters
   are materialised
+- `soil_moisture_source` — optional soil moisture data-source type
+  (e.g. `CPCSoil`). Loaded automatically at `init` time and used as
+  time-varying prescribed soil moisture. Overridden by `data.soil_moisture`
+  if both are supplied.
 - `lapse_rate_model::LapseRate` — atmospheric lapse-rate model for
   elevation-correcting weather data
+- `solar_only::Bool` — when `true`, skip the microclimate ODE and return
+  only solar radiation output. Defaults to four broadband layers when
+  `solar_output_layers` is empty.
+- `solar_output_layers` — tuple of `SolarOutputLayer`s controlling which
+  solar radiation rasters are written alongside (or instead of) microclimate
+  output. Each layer may request broadband or a waveband integral. Predefined
+  constants: `SOLAR_BROADBAND`, `SOLAR_PAR`, `SOLAR_UVB`, `SOLAR_NIR`.
 """
-@kwdef struct MicroMapModel{MM,DS,WS,LCS,SAS,RHS,OL,LRT}
+@kwdef struct MicroMapModel{MM,DS,WS,LCS,SAS,RHS,SMS,OL,LRT,SOL}
     micro_model::MM
     dem_source::DS
     weather_source::WS
     landcover_source::LCS = nothing
     surface_albedo_source::SAS = nothing
     roughness_height_source::RHS = nothing
+    soil_moisture_source::SMS = nothing
     output_layers::OL = _DEFAULT_OUTPUT_LAYERS
     lapse_rate_model::LRT = EnvironmentalLapseRate()
     compute_terrain::Bool = true
+    solar_only::Bool = false
+    cloud_correct_solar::Bool = false
+    solar_output_layers::SOL = ()
 end
 
 # Per-run workspace built by `init(problem)`. Holds the spatially-extracted
@@ -148,6 +165,19 @@ mutable struct MicroMapCache{P,W,T,A,R,CO,M,POOL,SC,CC}
     cloud_constants::CC              # Shared SolarRadiation constants
 end
 
+"""
+    terrain(cache::MicroMapCache) -> RasterStack
+
+Return the terrain `RasterStack` computed during `init`. Layers:
+`elevation`, `slope`, `aspect`, `latitude`, `longitude`,
+`atmospheric_pressure`, `horizon_angles`.
+
+Pass this as `data = (; terrain = terrain(cache))` on a subsequent
+`MicroRasterProblem` or `MicroVectorProblem` to reuse it and skip the
+DEM download and horizon-angle computation.
+"""
+terrain(cache::MicroMapCache) = cache.terrain
+
 # ---------------------------------------------------------------------------
 # Init helpers — shared by both modes
 # ---------------------------------------------------------------------------
@@ -155,7 +185,7 @@ end
 # Keys in `problem.data` that target collection sources or named single
 # layers; anything else is interpreted as a canonical weather variable.
 const _SPECIAL_DATA_KEYS = (
-    :weather, :landcover, :dem, :surface_albedo, :roughness_height,
+    :weather, :landcover, :dem, :terrain, :surface_albedo, :roughness_height,
 )
 
 @inline _is_special_key(k::Symbol) = k in _SPECIAL_DATA_KEYS
@@ -229,21 +259,28 @@ _build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
 @inline _is_active(_I::Tuple, ::Nothing) = true
 @inline _is_active(I::Tuple, mask) = mask[I...]
 
-# Returns true when ANY weather layer is NaN at I — ocean, outside the land
-# mask, or a coastal pixel where cubic-spline resampling produced NaN.
-@inline function _is_missing_pixel(weather, I)
-    return any(values(weather)) do layer
+# Returns true when ANY weather layer or canonical override is NaN at I —
+# ocean, outside the land mask, or a coastal pixel where resampling produced NaN.
+@inline function _is_missing_pixel(weather, canonical_overrides, I)
+    any(values(weather)) do layer
         isnan(Float64(layer[I..., Ti(1)]))
+    end || any(values(canonical_overrides)) do layer
+        v = hasdim(layer, Ti) ? layer[I..., Ti(1)] : layer[I...]
+        isnan(Float64(v))
     end
 end
 
-_first_active_index(rast, ::Nothing, weather) = _first_nonmissing(DimIndices(rast), weather)
-function _first_active_index(rast, mask, weather)
-    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather)
+# Solar-only missing check: NaN DEM elevation (ocean / no-data) skips a pixel.
+# Weather is not loaded in solar-only mode so the standard check cannot apply.
+@inline _is_missing_solar_pixel(terrain, I) = isnan(Float64(terrain.elevation[I...]))
+
+_first_active_index(rast, ::Nothing, weather, co) = _first_nonmissing(DimIndices(rast), weather, co)
+function _first_active_index(rast, mask, weather, co)
+    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather, co)
 end
-function _first_nonmissing(indices, weather)
+function _first_nonmissing(indices, weather, co)
     for I in indices
-        _is_missing_pixel(weather, I) || return I
+        _is_missing_pixel(weather, co, I) || return I
     end
     error("All pixels are masked or have missing weather data (ocean?).")
 end
@@ -343,6 +380,14 @@ end
 
 # Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
+# ---------------------------------------------------------------------------
+# Soil-moisture source loader
+# ---------------------------------------------------------------------------
+
+# Default: no soil_moisture_source → nothing (prescribed moisture must come
+# from weather source or data.soil_moisture override).
+_load_soil_moisture(::Nothing, _area, _years) = nothing
+
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
@@ -382,6 +427,31 @@ function _build_inputs_and_pool(;
         cloud_constants,
     )
 
+    npixels = length(terrain.elevation)
+    nworkers = min(Threads.nthreads(), npixels)
+
+    if model.solar_only
+        @info "model: threads:         $(Threads.nthreads())"
+        # No ODE needed — pool contains scratch-only workers (no micro field).
+        # build_inputs is never called in _solve_solar_only!.
+        _build_inputs_noop = (scratch, I) -> nothing
+        proto = (; scratch = allocate_scratch())
+        cache_pool = Channel{typeof(proto)}(nworkers)
+        put!(cache_pool, proto)
+        for _ in 2:nworkers
+            put!(cache_pool, (; scratch = allocate_scratch()))
+        end
+        return (_build_inputs_noop, cache_pool)
+    end
+
+    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    sm_src = model.soil_moisture_source !== nothing ? " ($(model.soil_moisture_source))" : ""
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
+    @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
+    @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
+    @info "model: threads:         $(Threads.nthreads())"
+
     function build_inputs(scratch, I::Tuple)
         horizon_angles = terrain.horizon_angles[I...]
         site = Site(;
@@ -419,14 +489,13 @@ function _build_inputs_and_pool(;
         )
     end
 
+    first_I = _first_active_index(terrain.elevation, nothing, weather, canonical_overrides)
     npixels = length(terrain.elevation)
-    first_I = _first_active_index(terrain.elevation, nothing, weather)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
          scratch)
     end
 
-    nworkers = min(Threads.nthreads(), npixels)
     proto = build_cache()
     cache_pool = Channel{typeof(proto)}(nworkers)
     put!(cache_pool, proto)
@@ -456,16 +525,36 @@ The two-arg form writes into the supplied `output` and returns it, for
 callers that want to reuse storage across runs.
 """
 function CommonSolve.solve!(cache::MicroMapCache)
+    model = cache.problem.model
+    solar_pairs = cache.init_inputs.solar_pairs
+
+    if model.solar_only
+        @info "solve: solar-only mode ($(length(solar_pairs)) layer(s))..."
+        solar_output = _allocate_solar_output(
+            cache.terrain, solar_pairs, cache.init_inputs.anchor_dates, cache.mask)
+        return _solve_solar_only!(solar_output, cache, solar_pairs)
+    end
+
     @info "solve: solving first pixel..."
     proto, first_I, first_result = _solve_proto_pixel!(cache)
+    layers = model.output_layers
     try
-        layers = cache.problem.model.output_layers
-        output = _allocate_output(cache.problem.model.micro_model,
+        output = _allocate_output(model.micro_model,
             cache.terrain, first_result, layers,
             cache.init_inputs.anchor_dates, cache.mask)
         _write_output!(output, first_result, layers, first_I)
+        solar_output = if !isempty(solar_pairs)
+            so = _allocate_solar_output(
+                cache.terrain, solar_pairs, cache.init_inputs.anchor_dates, cache.mask)
+            _compute_solar_for_pixel!(proto.scratch, cache.terrain, cache.albedo_grid, first_I)
+            _write_solar_output!(so, proto.scratch.solar.out, solar_pairs,
+                cache.cloud_constants.solar_model.wavelengths, first_I)
+            so
+        else
+            nothing
+        end
         @info "solve: starting main loop..."
-        return _solve_remaining!(output, cache, proto, first_I)
+        return _solve_remaining!(output, solar_output, cache, proto, first_I)
     catch
         put!(cache.cache_pool, proto)
         rethrow()
@@ -473,11 +562,23 @@ function CommonSolve.solve!(cache::MicroMapCache)
 end
 
 function CommonSolve.solve!(output::RasterStack, cache::MicroMapCache)
+    model = cache.problem.model
+    solar_pairs = cache.init_inputs.solar_pairs
     proto, first_I, first_result = _solve_proto_pixel!(cache)
+    layers = model.output_layers
     try
-        layers = cache.problem.model.output_layers
         _write_output!(output, first_result, layers, first_I)
-        return _solve_remaining!(output, cache, proto, first_I)
+        solar_output = if !isempty(solar_pairs)
+            so = _allocate_solar_output(
+                cache.terrain, solar_pairs, cache.init_inputs.anchor_dates, cache.mask)
+            _compute_solar_for_pixel!(proto.scratch, cache.terrain, cache.albedo_grid, first_I)
+            _write_solar_output!(so, proto.scratch.solar.out, solar_pairs,
+                cache.cloud_constants.solar_model.wavelengths, first_I)
+            so
+        else
+            nothing
+        end
+        return _solve_remaining!(output, solar_output, cache, proto, first_I)
     catch
         put!(cache.cache_pool, proto)
         rethrow()
@@ -495,7 +596,7 @@ function _solve_proto_pixel!(cache)
     proto   = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
         _is_active(I, mask)       || continue
-        _is_missing_pixel(weather, I) && continue
+        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
         reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
         try
             solve!(proto.micro)
@@ -507,12 +608,15 @@ function _solve_proto_pixel!(cache)
     error("No pixel solved successfully — all pixels are masked, ocean, or have invalid weather data.")
 end
 
-function _solve_remaining!(output, cache, proto, first_I)
+function _solve_remaining!(output, solar_output, cache, proto, first_I)
     cache_pool = cache.cache_pool
     layers = cache.problem.model.output_layers
     build_inputs = cache.init_inputs.build_inputs
     mask = cache.mask
     weather = cache.weather
+    has_solar = solar_output !== nothing
+    solar_pairs = cache.init_inputs.solar_pairs
+    wavelengths = has_solar ? cache.cloud_constants.solar_model.wavelengths : nothing
     put!(cache_pool, proto)
 
     pixel_indices = DimIndices(cache.terrain.elevation)
@@ -522,7 +626,7 @@ function _solve_remaining!(output, cache, proto, first_I)
     for I in pixel_indices
         I == first_I && continue
         _is_active(I, mask) || continue
-        _is_missing_pixel(weather, I) && continue
+        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
         put!(work, I)
         nwork += 1
     end
@@ -535,7 +639,7 @@ function _solve_remaining!(output, cache, proto, first_I)
     show_progress = npixels_active > 10
     done = Threads.Atomic{Int}(1)
     t_start = time()
-    last_report = Ref(t_start - 10.1)  # triggers first print after 10 s
+    last_report_ms = Threads.Atomic{Int64}(round(Int64, (t_start - 10.1) * 1000))
 
     nworkers = cache_pool.sz_max
     @sync for _ in 1:nworkers
@@ -550,11 +654,18 @@ function _solve_remaining!(output, cache, proto, first_I)
                         continue  # leave output as NaN for failed pixels
                     end
                     _write_output!(output, c.micro.output, layers, I)
+                    if has_solar
+                        _compute_solar_for_pixel!(c.scratch, cache.terrain, cache.albedo_grid, I)
+                        _write_solar_output!(solar_output, c.scratch.solar.out,
+                            solar_pairs, wavelengths, I)
+                    end
                     n = Threads.atomic_add!(done, 1) + 1
                     if show_progress
                         t_now = time()
-                        if t_now - last_report[] >= 10.0
-                            last_report[] = t_now
+                        t_now_ms = round(Int64, t_now * 1000)
+                        prev_ms = last_report_ms[]
+                        if t_now_ms - prev_ms >= 10_000 &&
+                                Threads.atomic_cas!(last_report_ms, prev_ms, t_now_ms) == prev_ms
                             elapsed = t_now - t_start
                             pct   = round(Int, 100 * n / npixels_active)
                             eta_s = round(Int, elapsed / n * (npixels_active - n))
@@ -567,7 +678,142 @@ function _solve_remaining!(output, cache, proto, first_I)
             end
         end
     end
-    return output
+    solar_output === nothing && return output
+    return RasterStack(merge(NamedTuple(output), NamedTuple(solar_output)))
+end
+
+# Populate scratch.solar.out for pixel I using actual terrain geometry.
+# Called for every solar output pass — both solar_only and combined modes.
+# For sources whose derivation chain includes :solar_geometry (e.g. NCEP),
+# this overwrites the flat-terrain solar computed in assemble_weather! with
+# the slope/aspect/horizon-corrected values needed for global_terrain output.
+# For monthly/daily sources (e.g. CRUCL2, TerraClimate), this is the only
+# call that populates scratch.solar.out, which their derivation chain skips.
+function _compute_solar_for_pixel!(scratch, terrain, albedo_grid, I)
+    horizon_angles = terrain.horizon_angles[I...]
+    solar_terrain = SolarTerrain(;
+        elevation            = terrain.elevation[I...],
+        slope                = terrain.slope[I...],
+        aspect               = terrain.aspect[I...],
+        latitude             = terrain.latitude[I...],
+        longitude            = terrain.longitude[I...],
+        atmospheric_pressure = terrain.atmospheric_pressure[I...],
+        horizon_angles,
+        albedo               = albedo_grid[I...],
+    )
+    solar_radiation!(scratch.solar.out, scratch.solar.buffers,
+        scratch.cloud_constants.solar_model;
+        solar_terrain,
+        days  = scratch.weather.days_of_year,
+        hours = scratch.cloud_constants.hours)
+    return nothing
+end
+
+# Return the native weather field name that maps to canonical :cloud_cover,
+# or `nothing` when the source does not provide cloud cover.
+# Return the WeatherVariable for :cloud_cover (carries native field name +
+# transform), or nothing if the source does not provide cloud cover.
+function _cloud_weather_variable(weather_source)
+    for var in weather_variables(weather_source)
+        canonical_name(var) === :cloud_cover && return var
+    end
+    return nothing
+end
+
+# Fill `factors` (length nsteps) with per-step Ångström sunshine fractions.
+# Each weather Ti step covers `nhours_per_step` consecutive solar output steps
+# (24 for monthly/daily sources). The WeatherVariable transform + unit are
+# applied to the raw native field value before clamping to [0, 1] — this
+# mirrors _copy_weather_to_buffers! so the cloud fraction is consistent
+# regardless of whether the native field is already in [0,1] or needs
+# conversion (e.g. CRUCL2 stores sunshine % via transform (100-s)/100).
+function _fill_cloud_factors!(factors, weather, cloud_var::WeatherVariable, I, nhours_per_step)
+    cloud_layer = getproperty(weather, native_field(cloud_var))
+    n_weather = length(lookup(cloud_layer, Ti))
+    k = 1
+    for d in 1:n_weather
+        raw   = Float64(cloud_layer[I..., Ti(d)])
+        cloud = clamp(cloud_var.transform(raw) * cloud_var.unit, 0.0, 1.0)
+        sf    = sunshine_fraction(Angstrom(), cloud)
+        for _ in 1:nhours_per_step
+            factors[k] = sf
+            k += 1
+        end
+    end
+    return factors
+end
+
+function _solve_solar_only!(solar_output, cache, solar_pairs)
+    cache_pool = cache.cache_pool
+    terrain = cache.terrain
+    albedo_grid = cache.albedo_grid
+    mask = cache.mask
+    wavelengths = cache.cloud_constants.solar_model.wavelengths
+    model = cache.problem.model
+
+    # Cloud correction setup — only when weather was loaded and source has cloud cover.
+    cloud_var = _cloud_weather_variable(model.weather_source)
+    cloud_correct = model.cloud_correct_solar &&
+        cloud_var !== nothing && !isempty(cache.weather)
+    nsteps = size(first(values(solar_output)), Ti)
+    nhours_per_step = if cloud_correct
+        n_weather = length(lookup(getproperty(cache.weather, native_field(cloud_var)), Ti))
+        nsteps ÷ n_weather
+    else
+        0
+    end
+
+    pixel_indices = DimIndices(terrain.elevation)
+    work = Channel{eltype(pixel_indices)}(max(length(pixel_indices), 1))
+    nwork = 0
+    for I in pixel_indices
+        _is_active(I, mask) || continue
+        _is_missing_solar_pixel(terrain, I) && continue
+        put!(work, I)
+        nwork += 1
+    end
+    close(work)
+
+    show_progress = nwork > 10
+    done = Threads.Atomic{Int}(0)
+    t_start = time()
+    last_report_ms = Threads.Atomic{Int64}(round(Int64, (t_start - 10.1) * 1000))
+
+    nworkers = cache_pool.sz_max
+    @sync for _ in 1:nworkers
+        Threads.@spawn begin
+            c = take!(cache_pool)
+            # Pre-allocate one cloud-factor buffer per worker (reused across pixels).
+            cloud_factors = cloud_correct ? Vector{Float64}(undef, nsteps) : nothing
+            try
+                for I in work
+                    if cloud_correct
+                        _fill_cloud_factors!(cloud_factors, cache.weather,
+                                            cloud_var, I, nhours_per_step)
+                    end
+                    _compute_solar_for_pixel!(c.scratch, terrain, albedo_grid, I)
+                    _write_solar_output!(solar_output, c.scratch.solar.out,
+                        solar_pairs, wavelengths, I; cloud_factors)
+                    if show_progress
+                        n = Threads.atomic_add!(done, 1) + 1
+                        t_now = time()
+                        t_now_ms = round(Int64, t_now * 1000)
+                        prev_ms = last_report_ms[]
+                        if t_now_ms - prev_ms >= 10_000 &&
+                                Threads.atomic_cas!(last_report_ms, prev_ms, t_now_ms) == prev_ms
+                            elapsed = t_now - t_start
+                            pct   = round(Int, 100 * n / nwork)
+                            eta_s = round(Int, elapsed / n * (nwork - n))
+                            @info "Solar solve: $n / $nwork pixels ($pct%) — ETA $(eta_s)s"
+                        end
+                    end
+                end
+            finally
+                put!(cache_pool, c)
+            end
+        end
+    end
+    return solar_output
 end
 
 # ---------------------------------------------------------------------------
