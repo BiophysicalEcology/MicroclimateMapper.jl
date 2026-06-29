@@ -28,7 +28,7 @@ using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
 using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
-    ForwardOrdered, ReverseOrdered, span
+    ForwardOrdered, ReverseOrdered, span, order, sampling
 using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
@@ -61,6 +61,15 @@ export
     reinit!,
     canonical_unit,
     strip_to_canonical,
+    load_cpcsoil,
+    terrain,
+    # Solar output
+    SolarOutputLayer,
+    SOLAR_BROADBAND,
+    SOLAR_PAR,
+    SOLAR_UVB,
+    SOLAR_NIR,
+    # Geocoding utilities
     geocode,
     GeocodeResult,
     load_template
@@ -80,11 +89,14 @@ include("climate/weather.jl")
 include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
+include("climate/crucl2.jl")
+include("climate/cpcsoil.jl")
 include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
 include("common.jl")
+include("solar/solar_output.jl")
 include("raster.jl")
 include("vector.jl")
 
