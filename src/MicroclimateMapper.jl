@@ -66,6 +66,7 @@ export
     load_template
 
 include("utils/geocode.jl")
+include("utils/utils.jl")
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")

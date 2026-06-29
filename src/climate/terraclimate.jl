@@ -1,8 +1,4 @@
-# TerraClimate bindings: a yearly NetCDF time series (one file per year,
-# each containing 12 months). Files supply temperature min/max, wind,
-# vapour pressure deficit, shortwave radiation, precipitation, and soil
-# moisture. The scenario (Historical, Plus2C, Plus4C) is encoded in the
-# `TerraClimate{Scenario}` source-type parameter.
+# TerraClimate bindings: a yearly NetCDF time series (one file per year, each containing 12 months).
 
 # TerraClimate's `:soil` layer is total soil water content (mm) in the top
 # rooting zone. Multiply by this scale to convert to volumetric water

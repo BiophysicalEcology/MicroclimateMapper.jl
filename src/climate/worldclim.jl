@@ -4,8 +4,8 @@
 #
 # WorldClim provides `:vapr` (actual vapour pressure in kPa) instead of
 # `:vpd`, so it relies on the default chain's
-# `vapour_pressure_deficit ← e_s(mean_T) - actual_vapour_pressure` step
-# (which fires automatically since VPD isn't in the variable map).
+# `vapour_pressure_deficit ← saturation_vapour_pressure(mean_temperature) - actual_vapour_pressure`
+# step (which fires automatically since vapour_pressure_deficit isn't in the variable map).
 #
 # WorldClim{Future{Climate}} only ships `:tmin`, `:tmax`, `:prec` (packed
 # as a single multi-band GeoTIFF, 12 monthly bands per file) so it falls
@@ -27,8 +27,8 @@ function weather_variables(::Type{<:WorldClim{Climate}})
         WeatherVariable(:global_radiation, :srad, u"kJ/m^2/d"),
         # `:prec` is mm depth; 1 mm of rainfall ≡ 1 kg/m^2.
         WeatherVariable(:rainfall, :prec, u"kg/m^2"),
-        # `:vapr` is actual vapour pressure — feeds the VPD-from-actual
-        # derivation that runs before RH.
+        # `:vapr` is actual vapour pressure — feeds the
+        # vapour-pressure-deficit derivation that runs before relative humidity.
         WeatherVariable(:actual_vapour_pressure, :vapr, u"kPa"),
     )
 end
@@ -37,7 +37,7 @@ end
 # WorldClim{Future{Climate, ...}} — projected period climatology
 # ---------------------------------------------------------------------------
 
-weather_loader(::Type{<:WorldClim{<:Future{Climate}}}) = MultiBandFutureClimatology()
+weather_loader(::Type{<:WorldClim{<:Future{Climate}}}) = MultiBandClimatologyPeriod()
 
 primary_layers(::Type{<:WorldClim{<:Future{Climate}}}) = (:tmin, :tmax, :prec)
 fallback_layers(::Type{<:WorldClim{<:Future{Climate}}}) = (:wind, :srad, :vapr)
