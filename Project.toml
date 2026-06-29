@@ -36,9 +36,9 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 [sources]
 BiophysicalBehaviour = {rev = "main", url = "https://github.com/BiophysicalEcology/BiophysicalBehaviour.jl"}
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
-Geomorphometry = {rev = "temp_updates", url = "https://github.com/rafaqz/Geomorphometry.jl"}
-Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
-RasterDataSources = {rev = "better_ncep", url = "https://github.com/EcoJulia/RasterDataSources.jl"}
+Geomorphometry = {path = "/home/raf/.julia/dev/Geomorphometry"}
+Microclimate = {path = "/home/raf/.julia/dev/Microclimate"}
+RasterDataSources = {rev = "master", url = "https://github.com/EcoJulia/RasterDataSources.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
 
 [extensions]
@@ -65,7 +65,7 @@ Makie = "0.21, 0.22, 0.23, 0.24"
 Microclimate = "0.1.0"
 ModelParameters = "0.4"
 NCDatasets = "0.14"
-RasterDataSources = "0.7.2"
+RasterDataSources = "0.7.2, 0.8"
 Rasters = "0.15"
 SafeTestsets = "0.1"
 Setfield = "1"

@@ -23,25 +23,140 @@
 # Variable map: canonical → native (per source)
 # ---------------------------------------------------------------------------
 
-"""
-    WeatherVariable{Name, Field, U, T}(unit, transform)
+# ---------------------------------------------------------------------------
+# Physical quantities a source's layers can carry
+# ---------------------------------------------------------------------------
+#
+# A weather layer is a physical quantity (temperature, vapour pressure, …),
+# optionally qualified by *which sample* of it the layer holds. A source declares
+# only what data it has — `Temperature(Maximum())`, `ActualVapourPressure(ClockTime(9))`,
+# `Rainfall()` — and the within-day (diel) model is then derived generically from
+# those qualifiers: daily extremes drive a min/max curve, timed samples an
+# interpolation through their times. Nothing about *how* the data is processed
+# lives with the source.
 
-Declares that the source's raster layer `Field` provides the canonical
-variable `Name`, with native `unit` (Unitful — auto-converted on
-assignment) and optional `transform` for source-specific scaling that
-isn't a unit conversion. Both `Name` and `Field` are encoded as type
-parameters so a tuple of `WeatherVariable`s gives the compiler one
-specialised path per entry.
 """
-struct WeatherVariable{Name, Field, U, T}
+    Aspect
+
+Which daily summary a layer holds: the whole-day value (`Whole`, the default),
+or a daily extreme (`Maximum`/`Minimum`). Together with `Microclimate.TimeOfDay`
+(a fixed clock time or solar event) it forms the qualifier of a [`WeatherQuantity`](@ref).
+"""
+abstract type Aspect end
+struct Whole <: Aspect end
+struct Maximum <: Aspect end
+struct Minimum <: Aspect end
+
+# A quantity's qualifier: a daily aspect, or a within-day time.
+const Qualifier = Union{Aspect, Microclimate.TimeOfDay}
+
+"""
+    WeatherQuantity
+
+A physical weather quantity carrying a [`Qualifier`](@ref) — the sample of it a
+layer holds (`Temperature(Maximum())`, `ActualVapourPressure(ClockTime(9))`,
+`Rainfall()`). The qualifier defaults to `Whole()` (the plain daily/instantaneous
+value).
+"""
+abstract type WeatherQuantity end
+
+# One struct per physical quantity; each wraps its qualifier. The defaults give
+# the unqualified whole-day value.
+for Q in (:Temperature, :WindSpeed, :EastwardWindSpeed, :NorthwardWindSpeed, :RelativeHumidity,
+          :GlobalRadiation, :LongwaveRadiation, :Rainfall, :CloudCover,
+          :DewpointTemperature, :Pressure, :SpecificHumidity, :VapourPressureDeficit,
+          :SoilMoisture, :ActualVapourPressure)
+    @eval begin
+        struct $Q{Q<:Qualifier} <: WeatherQuantity
+            at::Q
+        end
+        $Q() = $Q(Whole())
+    end
+end
+
+@inline qualifier(q::WeatherQuantity) = q.at
+
+# The physical-quantity key, ignoring the qualifier — the hourly canonical name a
+# timed forcing produces and that derivations reference (so the two AWAP vapour-
+# pressure readings both belong to `:actual_vapour_pressure`).
+@inline physical_quantity(::Temperature) = :reference_temperature
+@inline physical_quantity(::WindSpeed) = :wind_speed
+@inline physical_quantity(::EastwardWindSpeed) = :eastward_wind
+@inline physical_quantity(::NorthwardWindSpeed) = :northward_wind
+@inline physical_quantity(::RelativeHumidity) = :reference_humidity
+@inline physical_quantity(::GlobalRadiation) = :global_radiation
+@inline physical_quantity(::LongwaveRadiation) = :longwave_radiation
+@inline physical_quantity(::Rainfall) = :rainfall
+@inline physical_quantity(::CloudCover) = :cloud_cover
+@inline physical_quantity(::DewpointTemperature) = :dewpoint_temperature
+@inline physical_quantity(::Pressure) = :pressure
+@inline physical_quantity(::SpecificHumidity) = :specific_humidity
+@inline physical_quantity(::VapourPressureDeficit) = :vapour_pressure_deficit
+@inline physical_quantity(::SoilMoisture) = :soil_moisture
+@inline physical_quantity(::ActualVapourPressure) = :actual_vapour_pressure
+
+# The working unit each quantity's buffer is held in (`nothing` → dimensionless).
+@inline working_unit(::Temperature) = u"K"
+@inline working_unit(::WindSpeed) = u"m/s"
+@inline working_unit(::EastwardWindSpeed) = u"m/s"
+@inline working_unit(::NorthwardWindSpeed) = u"m/s"
+@inline working_unit(::RelativeHumidity) = nothing
+@inline working_unit(::GlobalRadiation) = u"W/m^2"
+@inline working_unit(::LongwaveRadiation) = u"W/m^2"
+@inline working_unit(::Rainfall) = u"kg/m^2"
+@inline working_unit(::CloudCover) = nothing
+@inline working_unit(::DewpointTemperature) = u"K"
+@inline working_unit(::Pressure) = u"Pa"
+@inline working_unit(::SpecificHumidity) = nothing
+@inline working_unit(::VapourPressureDeficit) = u"kPa"
+@inline working_unit(::SoilMoisture) = nothing
+@inline working_unit(::ActualVapourPressure) = u"kPa"
+
+# The unique buffer/canonical key for a declared sample: the conventional name for
+# whole-day and extreme aspects, and a time-tagged name for timed samples so the
+# several readings of one quantity stay distinct. The whole/timed cases are generic
+# in the quantity; the irregular extreme names are overridden per quantity.
+@inline canonical_name(q::WeatherQuantity) = _canonical_name(q, qualifier(q))
+@inline _canonical_name(q::WeatherQuantity, ::Whole) = physical_quantity(q)
+@inline _canonical_name(q::WeatherQuantity, t::Microclimate.TimeOfDay) =
+    _timed_name(physical_quantity(q), t)
+@inline canonical_name(::Temperature{Maximum}) = :temperature_max
+@inline canonical_name(::Temperature{Minimum}) = :temperature_min
+@inline canonical_name(::RelativeHumidity{Maximum}) = :reference_humidity_max
+@inline canonical_name(::RelativeHumidity{Minimum}) = :reference_humidity_min
+
+# Time-tagged name, e.g. `:actual_vapour_pressure_9`. Foldable so a literal
+# declaration yields a compile-time-constant key for the buffer NamedTuple.
+Base.@assume_effects :foldable function _timed_name(base::Symbol, t::Microclimate.ClockTime)
+    h = t.hour
+    tag = isinteger(h) ? string(Int(h)) : replace(string(h), "." => "_")
+    return Symbol(base, :_, tag)
+end
+
+"""
+    WeatherVariable(quantity, field, unit = 1, transform = identity)
+
+Declares that the source's raster layer `field` provides `quantity` (a
+[`WeatherQuantity`](@ref)), with native `unit` (Unitful — auto-converted on
+assignment) and optional `transform` for source-specific scaling that isn't a unit
+conversion. The quantity's `canonical_name` and the `field` are encoded as type
+parameters so a tuple of `WeatherVariable`s gives the compiler one specialised path
+per entry.
+"""
+struct WeatherVariable{Name, Field, Q, U, T}
+    quantity::Q
     unit::U
     transform::T
 end
-WeatherVariable(name::Symbol, field::Symbol, unit = 1, transform = identity) =
-    WeatherVariable{name, field, typeof(unit), typeof(transform)}(unit, transform)
+function WeatherVariable(quantity::WeatherQuantity, field::Symbol, unit = 1, transform = identity)
+    name = canonical_name(quantity)
+    return WeatherVariable{name, field, typeof(quantity), typeof(unit), typeof(transform)}(
+        quantity, unit, transform)
+end
 
 @inline canonical_name(::WeatherVariable{Name}) where {Name} = Name
 @inline native_field(::WeatherVariable{<:Any, Field}) where {Field} = Field
+@inline quantity(v::WeatherVariable) = v.quantity
 
 """
     weather_variables(::Type{<:RasterDataSource}) -> Tuple{WeatherVariable, …}
@@ -236,13 +351,13 @@ function weather_loader end
 """
     primary_layers(source) -> Tuple{Symbol, …}
 
-Source-native raster layer names to load via `weather_loader(source)`.
-Defaults to the unique set of `native_field`s drawn from
-`weather_variables(source)`. Future-style sources whose primary file set
-is a strict subset of their declared variables (the rest coming from a
-baseline) should override this.
+Canonical variable names to load from `source` itself via
+`weather_loader(source)`. Defaults to every canonical variable the source
+declares in `weather_variables`. Future-style sources whose own files cover
+only a subset of their declared variables (the rest coming from a baseline)
+override this to that subset.
 """
-@inline primary_layers(source) = _unique_native_fields(weather_variables(source))
+@inline primary_layers(source) = map(canonical_name, weather_variables(source))
 
 """
     fallback_source(source) -> source or Nothing
@@ -256,8 +371,8 @@ Default `nothing` means no fallback.
 """
     fallback_layers(source) -> Tuple{Symbol, …}
 
-Source-field names to load from the `fallback_source` and merge into the
-returned stack. Default empty.
+Canonical variable names to load from `fallback_source(source)` and merge
+into the returned stack. Default empty.
 """
 @inline fallback_layers(::Type) = ()
 
@@ -305,23 +420,22 @@ end
 """
     _load_weather(source, area, years) -> RasterStack
 
-Loads every layer the source contributes to the canonical variable map.
-For sources with a `fallback_source`, the primary layers come from the
-source itself and the fallback layers come from the baseline — both are
-merged into one `RasterStack`. Dispatch is via `weather_loader(source)`.
+Loads every layer the source contributes to the canonical variable map,
+returning a `RasterStack` keyed by canonical variable name. For sources with
+a `fallback_source`, the primary layers come from the source itself and the
+fallback layers come from the baseline — both are merged into one
+`RasterStack`. Dispatch is via `weather_loader(source)`.
 
 `_post_load_stack!(source, stack, nyears)` is called after loading so
 sources can normalise sub-daily Ti before the canonical pipeline sees the data.
 """
 function _load_weather(source::Type, area::Extent, years)
-    primary_stack = _load_layers(weather_loader(source), source,
-                                 primary_layers(source), area, years)
+    primary_stack = _load_canonical(source, primary_layers(source), area, years)
     baseline = fallback_source(source)
     stack = baseline === nothing ?
         RasterStack(primary_stack) :
         RasterStack(merge(primary_stack,
-            _load_layers(weather_loader(baseline), baseline,
-                         fallback_layers(source), area, years)))
+            _load_canonical(baseline, fallback_layers(source), area, years)))
     # Source files declare a `missingval`, so loaded eltypes are
     # `Union{Missing, T}`. The per-pixel reader does `value * unit`,
     # which throws `convert(Missing, Quantity)` on any masked cell.
@@ -479,6 +593,42 @@ end
 @inline _contains(t::Tuple, f) = first(t) === f || _contains(Base.tail(t), f)
 
 # ---------------------------------------------------------------------------
+# Canonical-keyed loading
+# ---------------------------------------------------------------------------
+#
+# `primary_layers`/`fallback_layers` name the *canonical* variables to load;
+# the native raster field each maps to is a per-source detail resolved here via
+# that source's `weather_variables`. Each unique native field is loaded once and
+# the returned stack is keyed by canonical name, so two canonical variables that
+# share a native field (e.g. CHELSA's single `:hurs` → both humidity bounds)
+# alias the one loaded raster. This is why a future source can fall back to a
+# baseline without re-declaring the baseline's native field names: the baseline
+# owns the native mapping for the variables it supplies.
+function _load_canonical(source, names::Tuple, area::Extent, years)
+    vars = _select_variables(weather_variables(source), names)
+    native_stack = _load_layers(weather_loader(source), source,
+                                _unique_native_fields(vars), area, years)
+    return _canonical_keyed(vars, native_stack)
+end
+
+# The WeatherVariables for `names`, drawn from the source's declared `vars` in
+# the order requested. Errors if the source doesn't declare a requested name.
+@inline _select_variables(vars::Tuple, names::Tuple) =
+    map(name -> _variable_for(vars, name), names)
+@inline _variable_for(::Tuple{}, name) =
+    error("no weather variable declares the canonical name :$name")
+@inline _variable_for(vars::Tuple, name) =
+    canonical_name(first(vars)) === name ? first(vars) :
+    _variable_for(Base.tail(vars), name)
+
+# Re-key a native-field-keyed stack to canonical names. Variables sharing a
+# native field read the same raster (`native_field` is a type-parameter
+# constant, so each `getproperty` folds).
+@inline _canonical_keyed(vars::Tuple, native_stack) =
+    NamedTuple{map(canonical_name, vars)}(
+        map(v -> getproperty(native_stack, native_field(v)), vars))
+
+# ---------------------------------------------------------------------------
 # Derivation registry
 # ---------------------------------------------------------------------------
 
@@ -505,8 +655,8 @@ function derive! end
 # Envelope shape (daily/monthly min-max sources): builds the min/max
 # environment the solver expands into a diel curve.
 const _ENVELOPE_PHYSICS = (
-    Val(:reference_temperature_max), # ← lapse(maximum_temperature)
-    Val(:reference_temperature_min), # ← lapse(minimum_temperature)
+    Val(:reference_temperature_max), # ← lapse(temperature_max)
+    Val(:reference_temperature_min), # ← lapse(temperature_min)
     Val(:mean_temperature),          # ← (ref_max + ref_min) / 2
     Val(:wind_speed),                # ← √(eastward_wind² + northward_wind²)
     Val(:actual_vapour_pressure),    # ← q·p / (0.622 + 0.378·q)
@@ -730,8 +880,7 @@ sizes the native tier and `target_timestep` the output tier.
 function allocate_weather_buffers(source::Type, target::Timestep, nyears::Int)
     cal = weather_calendar(source)
     native = native_timestep(source)
-    _allocate_weather_buffers(cal, native, target, _native_buffer_names(source),
-                              _days_of_year(cal, nyears))
+    _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, nyears))
 end
 
 # The native tier holds every quantity read from the stack plus the two combiners
@@ -746,8 +895,9 @@ end
 # default) means a dimensionless Float64 quantity (humidity fractions, cloud
 # fractions, specific humidity, soil moisture). Distinct from `canonical_unit`,
 # which is the unit the *output* layers are presented in (e.g. K here vs °C out).
-working_units(::Val{:maximum_temperature})          = u"K"
-working_units(::Val{:minimum_temperature})          = u"K"
+working_units(::Val) = nothing
+working_units(::Val{:temperature_max})          = u"K"
+working_units(::Val{:temperature_min})          = u"K"
 working_units(::Val{:mean_temperature})             = u"K"
 working_units(::Val{:reference_temperature})        = u"K"
 working_units(::Val{:reference_temperature_min})    = u"K"
@@ -812,11 +962,13 @@ _environment_hourly_stub(n) = HourlyTimeseries(;
     rainfall = nothing, zenith_angle = nothing,
 )
 
-# The per-step buffer set every envelope (min/max) source allocates — a superset:
-# a source provides some quantities natively and derives the rest; any it never
-# touches stay zero.
+# The quantities the standard envelope physics pipeline operates on. Every
+# envelope source allocates at least these: a source provides some natively and
+# derives the rest; any it never touches stay zero (the derivations write harmless
+# garbage nothing reads). A source's own native variables and any extra quantities
+# its forcing model reads are unioned in alongside (see `_allocate_weather_buffers`).
 const _ENVELOPE_BUFFERS = (
-    :maximum_temperature, :minimum_temperature, :mean_temperature,
+    :temperature_max, :temperature_min, :mean_temperature,
     :reference_temperature_min, :reference_temperature_max,
     :wind_speed, :eastward_wind, :northward_wind, :reference_wind_min, :reference_wind_max,
     :vapour_pressure_deficit, :actual_vapour_pressure,
@@ -825,6 +977,77 @@ const _ENVELOPE_BUFFERS = (
     :global_radiation, :cloud_cover, :cloud_min, :cloud_max,
     :rainfall, :deep_soil_temperature, :soil_moisture,
 )
+
+# ---------------------------------------------------------------------------
+# Within-day forcing model, derived from the declared variables
+# ---------------------------------------------------------------------------
+#
+# The envelope (min/max) within-day model is assembled generically from what the
+# source declares — no per-source forcing method. Temperature, wind and cloud
+# always follow the standard min/max curves over the reference buffers the physics
+# chain fills. A quantity declared at several within-day *times* (AWAP's vapour
+# pressure at 09:00 and 15:00) instead drives an interpolating curve through those
+# times; when that quantity is vapour pressure, relative humidity is derived per
+# hour from it and the hourly temperature rather than carried as a min/max.
+
+# Bind the model to the per-day buffers (the curve values share storage with the
+# buffers, so filling them feeds the curves), then overlay any timed forcings.
+function _envelope_forcings(variables::Tuple, b)
+    valuesource = name -> getproperty(b, name)
+    standard = Microclimate.bind_forcings(Microclimate.MINMAX_FORCING_MODEL, valuesource)
+    timed = _timed_forcings(variables, valuesource)
+    isempty(timed) && return standard
+    base = (; standard.reference_temperature, standard.reference_wind_speed, standard.cloud_cover)
+    humidity = haskey(timed, :actual_vapour_pressure) ?
+        (; reference_humidity = Derived(
+            RelativeHumidityFromVapourPressureAndTemperature(GoffGratch()),
+            (:actual_vapour_pressure, :reference_temperature))) :
+        (; standard.reference_humidity)
+    return merge(base, timed, humidity)
+end
+
+# A `DielForcing` for every physical quantity declared at within-day times: an
+# interpolation through the sampled times, fed by those samples' buffers. Runs
+# once per worker at allocation, so plain runtime collections are fine.
+function _timed_forcings(variables::Tuple, valuesource)
+    Sample = Tuple{Microclimate.TimeOfDay, Symbol}
+    groups = Pair{Symbol, Vector{Sample}}[]
+    for v in variables
+        q = quantity(v)
+        t = qualifier(q)
+        t isa Microclimate.TimeOfDay || continue
+        key = physical_quantity(q)
+        i = findfirst(p -> first(p) === key, groups)
+        sample = (t, canonical_name(v))
+        i === nothing ? push!(groups, key => Sample[sample]) : push!(last(groups[i]), sample)
+    end
+    isempty(groups) && return (;)
+    names = Tuple(first(g) for g in groups)
+    forcings = map(groups) do (_, samples)
+        sort!(samples; by = s -> Microclimate.nominal_hour(first(s)))
+        times = Tuple(first(s) for s in samples)
+        curve = _clock_curve(times)
+        Microclimate.DielForcing(curve, Tuple(valuesource(last(s)) for s in samples))
+    end
+    return NamedTuple{names}(Tuple(forcings))
+end
+
+# A cyclic curve interpolating through `times`: a linear segment between each
+# consecutive pair (wrapping the last back to the first), every time an input.
+function _clock_curve(times::Tuple)
+    n = length(times)
+    n >= 2 || error("a timed forcing needs at least two samples, got $n")
+    shapes = ntuple(i -> Microclimate.Linear(times[i], times[mod1(i + 1, n)]), n)
+    return Microclimate.DielCurve(shapes, times)
+end
+
+# Per-declared-variable buffers, each in its quantity's working unit (distinct from
+# the standard scratch buffers, which are keyed by name). Timed samples land here
+# under their time-tagged names.
+@inline function _variable_buffers(variables::Tuple, n::Int)
+    names = map(canonical_name, variables)
+    return NamedTuple{names}(map(v -> _zeros(working_unit(quantity(v)), n), variables))
+end
 
 # Every series-shape source (hourly or resampled-to-hourly) shares the same
 # output tier and the same daily-aggregate tier — only whether it carries a
@@ -839,23 +1062,20 @@ const _SERIES_DAILY = (:rainfall_daily, :deep_soil_temperature, :soil_moisture)
 # MinMax timestep (daily/monthly high-low sources): the solver draws the diel
 # curve from the per-step envelope, so the target timestep does not change the
 # buffers. The calendar picks the env-minmax struct.
-function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep,
-                                   native_names, days_of_year::AbstractVector{Int})
+function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep, source::Type,
+                                   days_of_year::AbstractVector{Int})
     nsteps = length(days_of_year)
-    # Some of these arrays are also held inside the env structs below; writes
+    variables = weather_variables(source)
+    # The standard envelope working set, overlaid with a buffer (in its own working
+    # unit) for each declared variable — including timed samples under time-tagged
+    # names. Some of these arrays are also held inside the env structs below; writes
     # via the canonical name show up in the struct (same array).
-    b = _zero_buffers(_ENVELOPE_BUFFERS, nsteps)
+    b = merge(_zero_buffers(_ENVELOPE_BUFFERS, nsteps), _variable_buffers(variables, nsteps))
 
-    # `_minmax_env_type(calendar)` returns the type constructor — same field set
-    # for Monthly and Daily, so the kwargs are identical.
-    environment_minmax = _minmax_env_type(calendar)(;
-        b.reference_temperature_min, b.reference_temperature_max,
-        b.reference_wind_min, b.reference_wind_max,
-        b.reference_humidity_min, b.reference_humidity_max,
-        b.cloud_min, b.cloud_max,
-        minima_times = (temp = 0, wind = 0, humidity = 1, cloud = 1),
-        maxima_times = (temp = 1, wind = 1, humidity = 0, cloud = 0),
-    )
+    # The within-day forcing model, derived from the declared variables and bound to
+    # the per-day buffers (shared storage), so filling the buffers feeds the curves.
+    forcings = _envelope_forcings(variables, b)
+    environment_minmax = _minmax_env_type(calendar)(; forcings)
     environment_daily = _environment_daily(nsteps, b.rainfall, b.deep_soil_temperature)
     environment_hourly = _environment_hourly_stub(nsteps)
 
@@ -871,7 +1091,8 @@ end
 # the output physics. When the native timestep equals the target the resample is an
 # identity — a value of the resample, not a separate code path.
 function _allocate_weather_buffers(::Calendar, native_step::SubDaily, target_step::SubDaily,
-                                   native_names, days_of_year::AbstractVector{Int})
+                                   source::Type, days_of_year::AbstractVector{Int})
+    native_names = _native_buffer_names(source)
     ndays = length(days_of_year)                  # 365 per year (no-leap calendar)
     nnat  = ndays * samples_per_day(native_step)  # native steps
     nout  = ndays * samples_per_day(target_step)  # output steps
@@ -996,9 +1217,9 @@ end
 end
 
 @inline function _read_one_variable!(buffers, weather,
-                                     var::WeatherVariable{Name, Field}, I) where {Name, Field}
+                                     var::WeatherVariable{Name}, I) where {Name}
     target = getproperty(buffers, Name)
-    layer = getproperty(weather, Field)
+    layer = getproperty(weather, Name)
     transform = var.transform
     unit = var.unit
     # Splat the spatial dim tuple from `DimIndices`; `Ti(k)` selects the
@@ -1086,12 +1307,12 @@ end
 
 function derive!(::Val{:reference_temperature_max}, buffers, ctx)
     _lapse_correct!(buffers.reference_temperature_max,
-                    buffers.maximum_temperature, ctx)
+                    buffers.temperature_max, ctx)
 end
 
 function derive!(::Val{:reference_temperature_min}, buffers, ctx)
     _lapse_correct!(buffers.reference_temperature_min,
-                    buffers.minimum_temperature, ctx)
+                    buffers.temperature_min, ctx)
 end
 
 function derive!(::Val{:mean_temperature}, buffers, ctx)
@@ -1299,8 +1520,8 @@ Derive monthly relative humidity following NicheMapR's micro_terra.R:
   relative_humidity = actual_vapour_pressure
                            / saturation_vapour_pressure(reference_temperature)
 
-Pass `reference_temperature = minimum_temperature` for RH_max and
-`reference_temperature = maximum_temperature` for RH_min. Output is clamped
+Pass `reference_temperature = temperature_min` for RH_max and
+`reference_temperature = temperature_max` for RH_min. Output is clamped
 to [0, 1].
 """
 function _relative_humidity_from_vpd!(
