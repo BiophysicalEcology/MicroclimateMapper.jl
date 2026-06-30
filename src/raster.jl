@@ -202,8 +202,8 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # unless the user already supplied data.soil_moisture explicitly.
     # Skipped in solar-only mode — weather is not loaded at all.
     if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
-        data = merge(data, (; soil_moisture = _load_soil_moisture(
-            soil_moisture_source, _to_extent(area), _years_from_dates(dates))))
+        data = merge(data, (; soil_moisture = _load_prescribed(
+            soil_moisture_source, SoilMoisture(), _to_extent(area), _years_from_dates(dates))))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)

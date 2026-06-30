@@ -180,7 +180,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
     if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
         sm_area = Extents.buffer(_points_extent(points),
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
-        data = merge(data, (; soil_moisture = _load_soil_moisture(soil_moisture_source, sm_area, years)))
+        data = merge(data, (; soil_moisture = _load_prescribed(soil_moisture_source, SoilMoisture(), sm_area, years)))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)

@@ -2,61 +2,32 @@
 #
 # Single NetCDF `cru_cl2.nc` with a `month` dimension (1–12) for all variables.
 # Uses SingleFileBands loader — no per-field file selection needed.
-# tmax/tmin and vapr require two-input derivations (WeatherVariable.transform
-# only handles one field), so they are computed in _post_load_stack!.
 # weather_calendar defaults to Monthly().
+#
+# The file ships mean temperature, diurnal range and relative humidity rather
+# than the extremes and vapour pressure the solver wants. Each is declared as
+# the quantity it is; the generic derivation chain then builds temperature_max
+# = mean + range/2, temperature_min = mean − range/2, and actual_vapour_pressure
+# from relative humidity and mean temperature.
 
-weather_loader(::Type{CRUCL2}) = SingleFileBands()
+loader(::Type{CRUCL2}) = SingleFileBands()
 
-# Primary fields to load from the single NetCDF. :tmp, :dtr, :reh are
-# intermediate inputs for the two-input derivations in _post_load_stack!
-# and do not appear in weather_variables. :elv tiles with the rest so the
-# returned stack has uniform dimensions for weather_grid_elevation.
-primary_layers(::Type{CRUCL2}) = (:tmp, :dtr, :reh, :wnd, :pre, :sunp, :elv)
-
-function weather_variables(::Type{CRUCL2})
+function variables(::Type{CRUCL2})
     (
-        WeatherVariable(Temperature(Maximum()), :tmax, u"°C"),
-        WeatherVariable(Temperature(Minimum()), :tmin, u"°C"),
-        WeatherVariable(WindSpeed(), :wnd, u"m/s"),
-        WeatherVariable(Rainfall(), :pre, u"kg/m^2"),
-        WeatherVariable(ActualVapourPressure(), :vapr, u"kPa"),
+        Variable(Temperature(Mean()), :tmp, u"°C"),
+        # A diurnal range is a temperature difference: its magnitude is identical
+        # in °C and K, so the working unit u"K" carries it with no affine offset.
+        Variable(Temperature(DiurnalRange()), :dtr, u"K"),
+        # reh is relative humidity percent (0–100); transform → fraction (0–1).
+        Variable(RelativeHumidity(), :reh, 1, raw -> raw / 100),
+        Variable(WindSpeed(), :wnd, u"m/s"),
+        Variable(Rainfall(), :pre, u"kg/m^2"),
         # sunp is sunshine percentage (0–100); transform converts to cloud fraction (0–1).
-        WeatherVariable(CloudCover(), :sunp, 1, s -> (100.0 - s) / 100.0),
+        Variable(CloudCover(), :sunp, 1, raw -> (100.0 - raw) / 100.0),
+        # The source ships its own grid elevation; declared as a quantity it loads
+        # through the same path and serves as the lapse-rate reference.
+        Variable(Elevation(), :elv, u"m"),
     )
-end
-
-# CRUCL2 ships its own grid elevation in the :elv layer; return it as the
-# lapse-rate reference elevation so corrections against the local SRTM DEM work.
-weather_grid_elevation(::Type{CRUCL2}, weather, I) =
-    Float64(weather[:elv][I..., Ti(1)]) * u"m"
-
-# Compute tmax, tmin, vapr from the raw intermediate fields loaded by
-# SingleFileBands, then rebuild the stack with only the canonical
-# native fields (removing :tmp, :dtr, :reh).
-function _post_load_stack!(::Type{CRUCL2}, stack, _)
-    ti = dims(stack[:tmp], Ti)
-    sp = dims(stack[:tmp])[1:2]
-    cr = crs(stack[:tmp])
-    wrap(data) = Raster(data, (sp..., ti); crs = cr)
-
-    tmp = parent(stack[:tmp])
-    dtr = parent(stack[:dtr])
-    reh = parent(stack[:reh])
-
-    tmax = wrap(tmp .+ dtr ./ 2)
-    tmin = wrap(tmp .- dtr ./ 2)
-    # Actual vapour pressure: e_sat(tmp) × reh/100.
-    # GoffGratch matches the derivation chain so vapr is internally consistent.
-    vapr = wrap(map(t -> ustrip(u"kPa", vapour_pressure(GoffGratch(), (t + 273.15) * u"K")), tmp)
-                .* reh ./ 100)
-
-    return RasterStack((; tmax, tmin,
-                          wnd  = stack[:wnd],
-                          pre  = stack[:pre],
-                          vapr,
-                          sunp = stack[:sunp],
-                          elv  = stack[:elv]))
 end
 
 # Use the CRUCL2 :elv layer as the DEM. At 10-minute (~18 km) resolution
@@ -65,16 +36,15 @@ end
 function _load_dem(::Type{CRUCL2}, area::Extent)
     path     = getraster(CRUCL2)
     buffered = Extents.buffer(area, (X = 0.2, Y = 0.2))   # ≥1 cell at 10-min resolution
-    elv      = read(crop(Raster(path; name = :elv, lazy = true);
-                         to = buffered, touches = true))
+    elv      = read(crop(Raster(path; name=:elv, lazy=true); to=buffered, touches=true))
     return Rasters.replace_missing(elv, 0)
 end
 
 # load_template for CRUCL2: uses the :elv band from the single NetCDF as the
 # run grid. The generic load_template passes extent as an RDS keyword which
 # doesn't work for file-path-based sources; dispatch here loads :elv directly.
-load_template(::Type{CRUCL2}, site::GeocodeResult) = load_template(CRUCL2, site.extent)
+load_template(T::Type, site::GeocodeResult) = load_template(T, site.extent)
 function load_template(::Type{CRUCL2}, extent::Extent)
     path = getraster(CRUCL2)
-    read(crop(Raster(path; name = :elv, lazy = true); to = extent, touches = true))
+    return crop(Raster(path; name=:elv, lazy=true); to=extent, touches=true)
 end

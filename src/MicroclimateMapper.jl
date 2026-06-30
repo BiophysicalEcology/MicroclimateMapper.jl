@@ -61,7 +61,6 @@ export
     reinit!,
     canonical_unit,
     strip_to_canonical,
-    load_cpcsoil,
     terrain,
     # Solar output
     SolarOutputLayer,
@@ -90,11 +89,11 @@ include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
 include("climate/crucl2.jl")
-include("climate/cpcsoil.jl")
 include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
+include("soil/cpcsoil.jl")
 include("common.jl")
 include("solar/solar_output.jl")
 include("raster.jl")

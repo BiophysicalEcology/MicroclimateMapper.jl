@@ -138,16 +138,8 @@ end
     @test poly_ext.X[1] ≈ 146.00
     @test poly_ext.X[2] ≈ 146.05
 
-    # _first_active_index: no mask = first dim index; with mask = first true cell
-    @test _first_active_index(template, nothing) == first(DimIndices(template))
-    first_I = _first_active_index(template, mask)
-    @test mask[first_I...] == true
-
-    # Empty mask should error rather than silently picking nothing
-    empty_mask = Raster(falses(size(template)), dims(template))
-    @test_throws ErrorException _first_active_index(template, empty_mask)
-
     # _is_active branches
+    first_I = first(I for I in DimIndices(template) if mask[I...])
     any_I = first(DimIndices(template))
     @test _is_active(any_I, nothing) === true
     @test _is_active(first_I, mask) === true

@@ -218,7 +218,7 @@ _resolve_init(::Nothing, _) = _DEFAULT_INIT
 function _has_canonical_input(name::Symbol, weather_source, data::NamedTuple)
     haskey(data, name) && return true
     weather_source === nothing && return false
-    for var in weather_variables(weather_source)
+    for var in variables(weather_source)
         canonical_name(var) === name && return true
     end
     return false
@@ -380,14 +380,6 @@ end
 
 # Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
-# ---------------------------------------------------------------------------
-# Soil-moisture source loader
-# ---------------------------------------------------------------------------
-
-# Default: no soil_moisture_source → nothing (prescribed moisture must come
-# from weather source or data.soil_moisture override).
-_load_soil_moisture(::Nothing, _area, _years) = nothing
-
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
@@ -430,7 +422,7 @@ function _build_inputs_and_pool(;
     nworkers = min(Threads.nthreads(), npixels)
 
     if model.solar_only
-        @info "model: threads:         $(Threads.nthreads())"
+        @info "model: threads: $(Threads.nthreads())"
         # No ODE needed — pool contains scratch-only workers (no micro field).
         # build_inputs is never called in _solve_solar_only!.
         _build_inputs_noop = (scratch, I) -> nothing
@@ -465,6 +457,7 @@ function _build_inputs_and_pool(;
             albedo = albedo_grid[I...],
             roughness_height = roughness_grid[I...],
         )
+        # TODO: why is this hacked in - there are two elevations
         ge = weather_grid_elevation(weather_source, weather, I)
         env = assemble_weather!(scratch, weather, weather_source, site, I;
             vapour_pressure_method, lapse_rate_model, canonical_overrides,
@@ -711,10 +704,10 @@ end
 
 # Return the native weather field name that maps to canonical :cloud_cover,
 # or `nothing` when the source does not provide cloud cover.
-# Return the WeatherVariable for :cloud_cover (carries native field name +
+# Return the Variable for :cloud_cover (carries native field name +
 # transform), or nothing if the source does not provide cloud cover.
 function _cloud_weather_variable(weather_source)
-    for var in weather_variables(weather_source)
+    for var in variables(weather_source)
         canonical_name(var) === :cloud_cover && return var
     end
     return nothing
@@ -722,12 +715,12 @@ end
 
 # Fill `factors` (length nsteps) with per-step Ångström sunshine fractions.
 # Each weather Ti step covers `nhours_per_step` consecutive solar output steps
-# (24 for monthly/daily sources). The WeatherVariable transform + unit are
+# (24 for monthly/daily sources). The Variable transform + unit are
 # applied to the raw native field value before clamping to [0, 1] — this
 # mirrors _copy_weather_to_buffers! so the cloud fraction is consistent
 # regardless of whether the native field is already in [0,1] or needs
 # conversion (e.g. CRUCL2 stores sunshine % via transform (100-s)/100).
-function _fill_cloud_factors!(factors, weather, cloud_var::WeatherVariable, I, nhours_per_step)
+function _fill_cloud_factors!(factors, weather, cloud_var::Variable, I, nhours_per_step)
     cloud_layer = getproperty(weather, native_field(cloud_var))
     n_weather = length(lookup(cloud_layer, Ti))
     k = 1
