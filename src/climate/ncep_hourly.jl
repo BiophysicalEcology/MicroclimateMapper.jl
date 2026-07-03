@@ -73,9 +73,9 @@ function _load_weather(::Type{NCEP}, area::Extent, years)
         (:air_2m, :shum_2m, :uwnd_10m, :vwnd_10m, :pres, :dswrf, :dlwrf, :prate),
         area, years)
 
-    # Normalise any 3-hourly layers (2920/year) to 6-hourly (1460/year).
+    # Normalise any 3-hourly layers (8/day) to 6-hourly (4/day).
     # See note in file header; SubDailyResolution{N} will handle this properly.
-    n6h = 1460 * length(years)
+    n6h = sum(Dates.daysinyear, years) * 4
     names = keys(stack)
     layers = map(names) do name
         layer = getproperty(stack, name)

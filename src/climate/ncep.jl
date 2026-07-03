@@ -18,11 +18,11 @@
 temporal_resolution(::Type{<:NCEP}) = DailyResolution()
 weather_loader(::Type{<:NCEP{SurfaceFlux}}) = YearlyTimeSeries()
 
-# NCEP{SurfaceFlux} is natively 6-hourly (1460 steps/year). Average any layer
-# whose Ti length exceeds the expected 365 × nyears to daily means before the
-# canonical pipeline sees the data.
-function _post_load_stack!(::Type{<:NCEP{SurfaceFlux}}, stack, nyears)
-    expected = 365 * nyears
+# NCEP{SurfaceFlux} is natively 6-hourly (4 steps/day). Average any layer
+# whose Ti length exceeds the expected real-calendar day count to daily
+# means before the canonical pipeline sees the data.
+function _post_load_stack!(::Type{<:NCEP{SurfaceFlux}}, stack, years)
+    expected = sum(Dates.daysinyear, years)
     names = keys(stack)
     layers = map(names) do name
         layer = getproperty(stack, name)

@@ -79,32 +79,33 @@ struct MonthlyResolution <: TemporalResolution end
 """
     DailyResolution
 
-365 timesteps per simulated year (leap days dropped for now). Used by
-daily sources such as NCEP, AWAP, ERA5 daily aggregates. Picks
-`DailyMinMaxEnvironment` and `1:365` for solar geometry — the solver then
-runs in consecutive-day mode (each day inherits soil state from the
-previous, see `DailyMinMaxEnvironment` docstring in Microclimate).
+365 or 366 timesteps per simulated year (real calendar days — leap years
+include Feb 29). Used by daily sources such as NCEP, AWAP, ERA5 daily
+aggregates. Picks `DailyMinMaxEnvironment` and real day-of-year for solar
+geometry — the solver then runs in consecutive-day mode (each day inherits
+soil state from the previous, see `DailyMinMaxEnvironment` docstring in
+Microclimate).
 """
 struct DailyResolution <: TemporalResolution end
 
 """
     HourlyResolution
 
-8760 timesteps per simulated year (24 × 365; leap-day Feb 29 dropped to
-keep year boundaries clean). Used by hourly sources such as ERA5. Skips
+8760 or 8784 timesteps per simulated year (24 × real calendar days — leap
+years include Feb 29's 24 hours). Used by hourly sources such as ERA5. Skips
 the min/max envelope entirely (`environment_minmax = nothing`) — hourly
-values flow straight into `environment_hourly`. `environment_daily`
-arrays remain at 365 entries per year and are filled by aggregating the
-hourly canonical buffers.
+values flow straight into `environment_hourly`. `environment_daily` arrays
+have one entry per calendar day and are filled by aggregating the hourly
+canonical buffers.
 """
 struct HourlyResolution <: TemporalResolution end
 
 """
     SixHourlyResolution
 
-Native 6-hourly files (4 × 365 = 1460 steps/year) interpolated to 8760 hourly
-output steps/year before the solver sees the data. Used by `NCEP`. Like
-`HourlyResolution`, skips the min/max envelope and runs in consecutive-day mode.
+Native 6-hourly files (4 per calendar day) interpolated to hourly output
+before the solver sees the data. Used by `NCEP`. Like `HourlyResolution`,
+skips the min/max envelope and runs in consecutive-day mode.
 
 Future sub-daily sources (3-hourly MERRA-2, 12-hourly GFS, etc.) follow the
 same pattern — declare their own `ThreeHourlyResolution` etc. with the matching
@@ -120,11 +121,6 @@ The time step a source's `_load_weather` produces. Default
 """
 @inline temporal_resolution(::Type) = MonthlyResolution()
 
-@inline steps_per_year(::MonthlyResolution) = 12
-@inline steps_per_year(::DailyResolution) = 365
-@inline steps_per_year(::HourlyResolution) = 8760
-@inline steps_per_year(::SixHourlyResolution) = 8760  # output to solver is hourly
-
 # Number of steps/year in the *native* files — drives staging-buffer sizes.
 # For sources that don't distinguish native from output resolution, these equal steps_per_year.
 @inline _native_steps_per_year(::MonthlyResolution) = 12
@@ -132,21 +128,22 @@ The time step a source's `_load_weather` produces. Default
 @inline _native_steps_per_year(::HourlyResolution) = 8760
 @inline _native_steps_per_year(::SixHourlyResolution) = 1460   # 4 × 365
 
-# Number of distinct solar-geometry days/year — used to size `scratch.solar.out`
-# in `_build_inputs_and_pool`. For sub-daily sources the output is hourly (365 days)
-# even though files contain >365 native steps.
-@inline _solar_ndays_per_year(::MonthlyResolution) = 12
-@inline _solar_ndays_per_year(::DailyResolution) = 365
-@inline _solar_ndays_per_year(::HourlyResolution) = 365
-@inline _solar_ndays_per_year(::SixHourlyResolution) = 365
-
 @inline _minmax_env_type(::MonthlyResolution) = MonthlyMinMaxEnvironment
 @inline _minmax_env_type(::DailyResolution) = DailyMinMaxEnvironment
 
-@inline _days_of_year(::MonthlyResolution, nyears) = repeat(Microclimate.DEFAULT_DAYS, nyears)
-@inline _days_of_year(::DailyResolution, nyears) = repeat(1:365, nyears)
-@inline _days_of_year(::HourlyResolution, nyears) = repeat(1:365, nyears)
-@inline _days_of_year(::SixHourlyResolution, nyears) = repeat(1:365, nyears)
+# `years` is the actual calendar-year span (e.g. `2000:2004`), not just a
+# count — daily/hourly/sub-daily resolutions need the real per-year day
+# count (365 or 366) to produce a correctly-sized day-of-year vector.
+@inline _days_of_year(::MonthlyResolution, years) = repeat(Microclimate.DEFAULT_DAYS, length(years))
+@inline _days_of_year(::Union{DailyResolution, HourlyResolution, SixHourlyResolution}, years) =
+    reduce(vcat, (1:Dates.daysinyear(y) for y in years))
+
+# Per-year step counts (365 or 366, × the sub-daily factor), used to build
+# `year_offsets` once per worker (see `_allocate_weather_buffers`).
+@inline _year_lengths(::MonthlyResolution, years) = fill(12, length(years))
+@inline _year_lengths(::DailyResolution, years) = Dates.daysinyear.(years)
+@inline _year_lengths(::HourlyResolution, years) = Dates.daysinyear.(years)
+@inline _year_lengths(::SixHourlyResolution, years) = Dates.daysinyear.(years)
 
 # ---------------------------------------------------------------------------
 # Date-range helpers
@@ -161,31 +158,32 @@ _years_to_dates(years::AbstractRange{Int}) =
 _years_from_dates(d::Date)                 = year(d):year(d)
 _years_from_dates(r::AbstractRange{Date})  = minimum(year, r):maximum(year, r)
 
-# Day-of-year on the 365-day calendar (Feb 29 is dropped, so March 1 = doy 60
-# whether or not the year is a leap year).
-function _doy_noleap(d::Date)
-    doy = dayofyear(d)
-    isleapyear(year(d)) && d >= Date(year(d), 3, 1) && (doy -= 1)
-    return doy
+# Number of days in every calendar year strictly before position `yi` in
+# `years_v` — the cumulative offset (in days) at which year `years_v[yi]`
+# begins. Setup-time only (called a handful of times per `init`), so the
+# `sum` allocation-free-ness doesn't matter.
+function _cumulative_year_days(years_v::Vector{Int}, yi::Int)
+    total = 0
+    @inbounds for i in 1:(yi - 1)
+        total += Dates.daysinyear(years_v[i])
+    end
+    return total
 end
 
-_is_leapday(d::Date) = isleapyear(year(d)) && month(d) == 2 && day(d) == 29
-
-# Normalise user-supplied dates to a sorted Vector{Date}, dropping Feb 29
-# (consistent with the 365-day-per-year convention throughout).
-_normalise_dates(d::Date) = _is_leapday(d) ? Date[] : [d]
+# Normalise user-supplied dates to a sorted Vector{Date}. Feb 29 is kept —
+# leap days are simulated like any other day.
+_normalise_dates(d::Date) = [d]
 function _normalise_dates(r::AbstractRange{Date})
-    v = filter(!_is_leapday, collect(r))
-    isempty(v) && error(
-        "No valid simulation dates remain after dropping Feb 29 " *
-        "(leap days are not yet supported).")
+    v = sort(collect(r))
+    isempty(v) && error("No simulation dates supplied.")
     return v
 end
 
 # Compute the 1-based positional Ti range into the full-years weather stack,
 # and the day-of-year vector for the solver (one entry per unique day, or per
-# month for monthly sources). `dates_vec` must already be normalised (sorted,
-# no Feb 29).
+# month for monthly sources). `dates_vec` must already be normalised (sorted).
+# Daily/hourly/sub-daily variants use real per-calendar-year day counts
+# (`Dates.daysinyear`), so leap years correctly contribute 366 days.
 function _ti_range_for_dates(::MonthlyResolution, years, dates_vec::Vector{Date})
     start_d, end_d = minimum(dates_vec), maximum(dates_vec)
     years_v = collect(years)
@@ -208,9 +206,9 @@ function _ti_range_for_dates(::DailyResolution, years, dates_vec::Vector{Date})
     years_v = collect(years)
     yi_start = findfirst(==(year(start_d)), years_v)
     yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 365 + _doy_noleap(start_d)
-    ti_end   = (yi_end   - 1) * 365 + _doy_noleap(end_d)
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
+    ti_start = _cumulative_year_days(years_v, yi_start) + dayofyear(start_d)
+    ti_end   = _cumulative_year_days(years_v, yi_end)   + dayofyear(end_d)
+    return ti_start, ti_end, dayofyear.(dates_vec)
 end
 
 function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
@@ -218,23 +216,23 @@ function _ti_range_for_dates(::HourlyResolution, years, dates_vec::Vector{Date})
     years_v = collect(years)
     yi_start = findfirst(==(year(start_d)), years_v)
     yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 8760 + (_doy_noleap(start_d) - 1) * 24 + 1
-    ti_end   = (yi_end   - 1) * 8760 + _doy_noleap(end_d) * 24
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
+    ti_start = _cumulative_year_days(years_v, yi_start) * 24 + (dayofyear(start_d) - 1) * 24 + 1
+    ti_end   = _cumulative_year_days(years_v, yi_end)   * 24 + dayofyear(end_d) * 24
+    return ti_start, ti_end, dayofyear.(dates_vec)
 end
 
-# Native stack has 1460 Ti steps/year (4 × 365), so the Ti slice is in 6h units.
-# The returned day-of-year vector has one entry per calendar day (365/year)
-# because solar geometry and the derivation chain operate at daily granularity
+# Native stack has 4 Ti steps/day, so the Ti slice is in 6h units.
+# The returned day-of-year vector has one entry per calendar day because
+# solar geometry and the derivation chain operate at daily granularity
 # regardless of sub-daily native resolution.
 function _ti_range_for_dates(::SixHourlyResolution, years, dates_vec::Vector{Date})
     start_d, end_d = minimum(dates_vec), maximum(dates_vec)
     years_v = collect(years)
     yi_start = findfirst(==(year(start_d)), years_v)
     yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 1460 + (_doy_noleap(start_d) - 1) * 4 + 1
-    ti_end   = (yi_end   - 1) * 1460 + _doy_noleap(end_d) * 4
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
+    ti_start = _cumulative_year_days(years_v, yi_start) * 4 + (dayofyear(start_d) - 1) * 4 + 1
+    ti_end   = _cumulative_year_days(years_v, yi_end)   * 4 + dayofyear(end_d) * 4
+    return ti_start, ti_end, dayofyear.(dates_vec)
 end
 
 # One "anchor" Date per solver step — used to carry the year when building
@@ -327,8 +325,8 @@ struct SingleFileBands <: WeatherLoader end
 
 One file per day per layer — the source ships one 2-D raster per calendar
 day. Used by daily station/grid products such as AWAP.
-`getraster(source, name; date = day)`. Feb 29 in leap years is skipped
-to match the fixed `nyears * 365` buffer size.
+`getraster(source, name; date = day)`. Feb 29 is requested like any other
+calendar date in leap years.
 """
 struct DailyFiles <: WeatherLoader end
 
@@ -410,16 +408,18 @@ activate the lapse correction machinery in `_lapse_correct!`.
 # ---------------------------------------------------------------------------
 
 """
-    _post_load_stack!(source, stack, nyears) -> RasterStack
+    _post_load_stack!(source, stack, years) -> RasterStack
 
 Source-specific post-processing hook called immediately after every layer of
 `stack` has been loaded. Default is a no-op (returns `stack` unchanged).
+`years` is the actual calendar-year span (not just a count), so overrides
+can compute a real leap-year-aware expected length via `Dates.daysinyear`.
 
 Override for sources whose files contain sub-daily Ti that the declared
 `temporal_resolution` does not expect — e.g. `NCEP{SurfaceFlux}` in daily mode
 stores 6-hourly data that needs averaging to daily.
 """
-_post_load_stack!(::Type, stack, _nyears) = stack
+_post_load_stack!(::Type, stack, _years) = stack
 
 # Average a sub-daily Ti layer down by `factor` steps using Rasters.aggregate.
 function _aggregate_ti_to_daily(layer::AbstractRaster, factor::Int)
@@ -434,7 +434,7 @@ For sources with a `fallback_source`, the primary layers come from the
 source itself and the fallback layers come from the baseline — both are
 merged into one `RasterStack`. Dispatch is via `weather_loader(source)`.
 
-`_post_load_stack!(source, stack, nyears)` is called after loading so
+`_post_load_stack!(source, stack, years)` is called after loading so
 sources can normalise sub-daily Ti before the canonical pipeline sees the data.
 """
 function _load_weather(source::Type, area::Extent, years)
@@ -452,7 +452,7 @@ function _load_weather(source::Type, area::Extent, years)
     # `replace_missing(..., NaN)` strips the Missing union and lets
     # NaN propagate visibly if any cell is genuinely masked.
     stack = Rasters.replace_missing(stack, NaN)
-    return _post_load_stack!(source, stack, length(years))
+    return _post_load_stack!(source, stack, years)
 end
 
 # ---------------------------------------------------------------------------
@@ -552,13 +552,13 @@ function _load_layers(::DailyFiles, source, fields::Tuple, area::Extent, years)
     return NamedTuple{fields}(layers)
 end
 
-# 365-day-per-year date sequence, dropping Feb 29 in leap years so the
-# loaded data matches the fixed `nyears * 365` buffer.
+# Full calendar-day sequence across `years`, one entry per real calendar
+# date (Feb 29 included in leap years) — matches the leap-aware buffer
+# sizing in `_days_of_year`/`allocate_weather_buffers`.
 function _daily_date_sequence(years)
     dates = Date[]
     for y in years
         for d in Date(y, 1, 1):Day(1):Date(y, 12, 31)
-            (Dates.month(d) == 2 && Dates.day(d) == 29) && continue
             push!(dates, d)
         end
     end
@@ -705,25 +705,47 @@ override to `_DERIVATIONS_HOURLY`.
 # ---------------------------------------------------------------------------
 
 """
-    allocate_weather_buffers(source, nyears) -> NamedTuple
+    allocate_weather_buffers(source, years) -> NamedTuple
 
 Per-worker scratch for `assemble_weather!`. Allocates one unit-tagged
 buffer per canonical variable plus the pre-constructed env structs that
 share storage with those buffers.
 
-The total number of timesteps is `nyears * steps_per_year(temporal_resolution(source))`,
-and the env-minmax struct type is `MonthlyMinMaxEnvironment` or
-`DailyMinMaxEnvironment` per the source's `temporal_resolution`. Everything
-else — `DailyTimeseries`, `HourlyTimeseries`, the intermediate buffers —
-just scales with the total timestep count.
+`years` is the actual calendar-year span (e.g. `2000:2004`), not just a
+count — daily/hourly/sub-daily resolutions need real years to size buffers
+correctly across leap years. The env-minmax struct type is
+`MonthlyMinMaxEnvironment` or `DailyMinMaxEnvironment` per the source's
+`temporal_resolution`. Everything else — `DailyTimeseries`,
+`HourlyTimeseries`, the intermediate buffers — just scales with the total
+timestep count.
 """
-function allocate_weather_buffers(source::Type, nyears::Int)
+function allocate_weather_buffers(source::Type, years)
     resolution = temporal_resolution(source)
-    _allocate_weather_buffers(resolution, source, _days_of_year(resolution, nyears))
+    days_of_year = _days_of_year(resolution, years)
+    year_offsets = _year_offsets(resolution, years)
+    _allocate_weather_buffers(resolution, source, days_of_year, year_offsets)
+end
+
+# Cumulative day/step boundaries per calendar year — a `length(years) + 1`
+# vector, e.g. `[0, 365, 730, 1096]` for three non-leap years, or
+# `[0, 366, 731, ...]` when a leap year is included. Built once per worker
+# (see `allocate_scratch` in `_build_inputs_and_pool`) and read by reference
+# thereafter, so the per-pixel derivations that consume it
+# (`_annual_means!`, `derive!(:deep_soil_temperature_from_hourly)`) stay
+# allocation-free and type-stable.
+function _year_offsets(resolution::TemporalResolution, years)
+    lengths = _year_lengths(resolution, years)
+    offsets = Vector{Int}(undef, length(lengths) + 1)
+    offsets[1] = 0
+    @inbounds for i in eachindex(lengths)
+        offsets[i + 1] = offsets[i] + lengths[i]
+    end
+    return offsets
 end
 
 function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyResolution},
-                                   ::Any, days_of_year::AbstractVector{Int})
+                                   ::Any, days_of_year::AbstractVector{Int},
+                                   year_offsets::Vector{Int})
     nsteps = length(days_of_year)
     zeros_float(n) = zeros(Float64, n)
 
@@ -794,7 +816,7 @@ function _allocate_weather_buffers(resolution::Union{MonthlyResolution, DailyRes
         reference_humidity_min, reference_humidity_max,
         downward_shortwave_radiation, cloud_cover, cloud_min, cloud_max,
         rainfall, deep_soil_temperature, soil_moisture,
-        days_of_year,
+        days_of_year, year_offsets,
         environment_minmax, environment_daily, environment_hourly,
     )
 end
@@ -802,8 +824,9 @@ end
 # Hourly mode: env_minmax = nothing, env_hourly arrays ARE the canonical
 # buffers (shared storage), env_daily arrays sit at 1/24 the resolution
 # and are filled by aggregating the hourly canonical buffers.
-function _allocate_weather_buffers(::HourlyResolution, ::Any, days_of_year::AbstractVector{Int})
-    ndays  = length(days_of_year)    # one per unique day (Feb 29 dropped)
+function _allocate_weather_buffers(::HourlyResolution, ::Any, days_of_year::AbstractVector{Int},
+                                   year_offsets::Vector{Int})
+    ndays  = length(days_of_year)    # one per calendar day (leap days included)
     nhours = ndays * 24
     zeros_float(n) = zeros(Float64, n)
 
@@ -853,25 +876,27 @@ function _allocate_weather_buffers(::HourlyResolution, ::Any, days_of_year::Abst
         rainfall, rainfall_daily, zenith_angle,
         dewpoint_temperature, actual_vapour_pressure,
         deep_soil_temperature,
-        days_of_year,
+        days_of_year, year_offsets,
         environment_minmax = nothing,
         environment_daily, environment_hourly,
     )
 end
 
 # Sub-daily (6-hourly) mode: two tiers of buffers.
-#   * `*_6h` staging buffers at native 6h resolution (1460 steps/year) — written by
+#   * `*_6h` staging buffers at native 6h resolution (4/day) — written by
 #     `_read_native!` via the source's WeatherVariable declarations.
-#   * Hourly output buffers (8760 steps/year) — filled by `_DERIVATIONS_6H_TO_1H`
+#   * Hourly output buffers (24/day) — filled by `_DERIVATIONS_6H_TO_1H`
 #     and shared with `environment_hourly` exactly as in `HourlyResolution`.
-#   * Daily aggregate buffers (365/year) shared with `environment_daily`.
+#   * Daily aggregate buffers (one/calendar day, leap days included) shared
+#     with `environment_daily`.
 # TODO: The buffer schema here differs from HourlyResolution (uses u/v_wind_6h and
 # specific_humidity_6h/surface_pressure_6h staging fields instead of bare u/v_wind and
 # dewpoint_temperature), so the duplication can't be eliminated by simply extending the
 # hourly allocator. Addressed holistically in the SubDailyResolution{N} refactor.
 function _allocate_weather_buffers(::SixHourlyResolution, _source,
-                                   days_of_year::AbstractVector{Int})
-    ndays  = length(days_of_year)   # 365 per year (no-leap calendar)
+                                   days_of_year::AbstractVector{Int},
+                                   year_offsets::Vector{Int})
+    ndays  = length(days_of_year)   # one per calendar day (leap days included)
     n6h    = ndays * 4              # native 6h staging steps
     nhours = ndays * 24             # hourly output
     zeros_float(n) = zeros(Float64, n)
@@ -934,7 +959,7 @@ function _allocate_weather_buffers(::SixHourlyResolution, _source,
         rainfall, zenith_angle, actual_vapour_pressure,
         # daily
         rainfall_daily, deep_soil_temperature, soil_moisture,
-        days_of_year,
+        days_of_year, year_offsets,
         environment_minmax = nothing,
         environment_daily, environment_hourly,
     )
@@ -972,12 +997,10 @@ function assemble_weather!(
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
     variables = weather_variables(source)
-    spy = steps_per_year(temporal_resolution(source))
 
     ctx = (;
         site, grid_elevation, lapse_rate_model, vapour_pressure_method,
         atmospheric_pressure = atm_pressure, scratch,
-        steps_per_year = spy,
         wind_reference_height,
     )
 
@@ -1229,10 +1252,8 @@ function derive!(::Val{:cloud_max}, buffers, ctx)
 end
 
 function derive!(::Val{:deep_soil_temperature}, buffers, ctx)
-    spy = ctx.steps_per_year
-    nyears = length(buffers.mean_temperature) ÷ spy
     _annual_means!(buffers.deep_soil_temperature,
-                   buffers.mean_temperature, nyears, spy)
+                   buffers.mean_temperature, buffers.year_offsets)
     return nothing
 end
 
@@ -1288,28 +1309,32 @@ function derive!(::Val{:rainfall_daily_from_hourly}, buffers, ctx)
     return nothing
 end
 
-# Annual mean of hourly reference_temperature, broadcast across all 365
-# daily entries of `deep_soil_temperature`.
+# Annual mean of hourly reference_temperature, broadcast across every daily
+# entry of `deep_soil_temperature` for that calendar year. `year_offsets`
+# (day units, precomputed once per worker) gives variable-length year blocks
+# so leap years (366 days / 8784 hours) are handled without allocating or
+# branching on `Dates.daysinyear` inside this per-pixel derivation.
 function derive!(::Val{:deep_soil_temperature_from_hourly}, buffers, ctx)
+    year_offsets = buffers.year_offsets
     ndays  = length(buffers.deep_soil_temperature)
     nhours = length(buffers.reference_temperature)
-    if ndays < 365
-        # Sub-annual run: fill with mean of all available hours.
+    nyears = length(year_offsets) - 1
+    if nyears <= 0 || year_offsets[end] != ndays
+        # Sub-annual or mismatched run: fill with mean of all available hours.
         run_mean = sum(buffers.reference_temperature) / nhours
         fill!(buffers.deep_soil_temperature, run_mean)
         return nothing
     end
-    nyears = ndays ÷ 365
     @inbounds for y in 1:nyears
-        h0 = (y - 1) * 8760
+        d_lo, d_hi = year_offsets[y] + 1, year_offsets[y + 1]
+        h_lo, h_hi = (d_lo - 1) * 24 + 1, d_hi * 24
         annual_sum = zero(eltype(buffers.reference_temperature))
-        for h in 1:8760
-            annual_sum += buffers.reference_temperature[h0 + h]
+        for h in h_lo:h_hi
+            annual_sum += buffers.reference_temperature[h]
         end
-        annual_mean = annual_sum / 8760
-        d0 = (y - 1) * 365
-        for d in 1:365
-            buffers.deep_soil_temperature[d0 + d] = annual_mean
+        annual_mean = annual_sum / (h_hi - h_lo + 1)
+        for d in d_lo:d_hi
+            buffers.deep_soil_temperature[d] = annual_mean
         end
     end
     return nothing
@@ -1360,9 +1385,11 @@ function derive!(::Val{:actual_vapour_pressure_6h}, buffers, _ctx)
     return nothing
 end
 
-# Linear interpolation helper: 1460 (4×365) 6-hourly values → 8760 hourly.
+# Linear interpolation helper: 4 6-hourly values/day → 24 hourly values/day.
 # The four 6h blocks per day have their midpoints at hours 3, 9, 15, 21.
 # Values outside the first/last block boundary are clamped to the edge value.
+# `ndays` is derived from the actual buffer length, so this is leap-year-safe
+# without any special-casing.
 function _interp_6h_to_1h!(out::AbstractVector, src::AbstractVector)
     ndays = length(src) ÷ 4
     @inbounds for d in 1:ndays
@@ -1496,31 +1523,35 @@ function _relative_humidity_from_vpd!(
 end
 
 """
-    _annual_means!(out, values, nyears, steps_per_year)
+    _annual_means!(out, values, year_offsets)
 
-For each of `nyears` years (`steps_per_year` consecutive entries), every
-entry within the year gets replaced by that year's annual mean. Used to
-build `deep_soil_temperature` for both monthly (`steps_per_year = 12`) and
-daily (`steps_per_year = 365`) resolutions.
+For each calendar year described by `year_offsets` (a cumulative-boundary
+vector, e.g. `[0, 365, 731, ...]` — see `_year_offsets`), every entry within
+that year's block gets replaced by the year's mean. Used to build
+`deep_soil_temperature` for monthly, daily, and hourly-aggregated-to-daily
+resolutions. Year blocks vary in length (365 vs 366) to correctly account
+for leap years — `year_offsets` is precomputed once per worker, so this
+stays allocation-free and type-stable despite the variable block size.
 """
 function _annual_means!(out::AbstractVector,
                         values::AbstractVector,
-                        nyears::Int,
-                        steps_per_year::Int)
-    if nyears == 0
-        # Sub-annual run: fill with mean of all available steps.
+                        year_offsets::Vector{Int})
+    nyears = length(year_offsets) - 1
+    if nyears <= 0 || year_offsets[end] != length(values)
+        # Sub-annual or mismatched run: fill with mean of all available steps.
         run_mean = sum(values) / length(values)
         fill!(out, run_mean)
         return out
     end
     @inbounds for y in 1:nyears
+        lo, hi = year_offsets[y] + 1, year_offsets[y + 1]
         annual_sum = zero(eltype(values))
-        for k in 1:steps_per_year
-            annual_sum += values[(y - 1) * steps_per_year + k]
+        for k in lo:hi
+            annual_sum += values[k]
         end
-        annual_mean = annual_sum / steps_per_year
-        for k in 1:steps_per_year
-            out[(y - 1) * steps_per_year + k] = annual_mean
+        annual_mean = annual_sum / (hi - lo + 1)
+        for k in lo:hi
+            out[k] = annual_mean
         end
     end
     return out
