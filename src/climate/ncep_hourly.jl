@@ -88,3 +88,23 @@ function _load_weather(::Type{NCEP}, area::Extent, years)
 
     return Rasters.replace_missing(RasterStack(NamedTuple{names}(layers)), NaN)
 end
+
+# Points-native counterpart of `_load_weather`, used by `MicroVectorProblem`.
+function _load_weather_points(::Type{NCEP}, points_dim, years)
+    stack = _load_layers_at_points(YearlyTimeSeries(), NCEP{SurfaceFlux, 1},
+        (:air_2m, :shum_2m, :uwnd_10m, :vwnd_10m, :pres, :dswrf, :dlwrf, :prate),
+        points_dim, years)
+
+    n6h = sum(Dates.daysinyear, years) * 4
+    names = keys(stack)
+    layers = map(names) do name
+        layer = getproperty(stack, name)
+        n = size(layer, Ti)
+        n == n6h && return layer
+        n % n6h == 0 || error(
+            "NCEP: $name has Ti=$n, not a multiple of expected 6h count $n6h")
+        return _aggregate_ti_to_daily(layer, n ÷ n6h)
+    end
+
+    return Rasters.replace_missing(RasterStack(NamedTuple{names}(layers)), NaN)
+end

@@ -371,6 +371,16 @@ elevation layer (e.g. CRUCL2's `elv`) should override this.
 """
 @inline weather_grid_elevation(::Type, _weather, _I) = nothing
 
+"""
+    supports_points_loading(source) -> Bool
+
+Whether `source` implements `_load_weather_points(source, points_dim, years)`.
+`true` by default via the generic `_load_weather_points` (mirrors the generic
+`_load_weather` dispatch over `weather_loader`); override to `false` for a
+source whose loader trait has no `_load_layers_at_points` method.
+"""
+@inline supports_points_loading(::Type) = true
+
 # ---------------------------------------------------------------------------
 # Generic _load_weather
 # ---------------------------------------------------------------------------
@@ -439,6 +449,51 @@ end
 _match_fallback_resolution(target::TemporalResolution, base::TemporalResolution, ::NamedTuple, _template, _years) =
     error("No resolution-matching path from $(typeof(base)) to $(typeof(target)) for a weather fallback")
 
+"""
+    _load_weather_points(source, points_dim, years) -> RasterStack
+
+Points-native counterpart of `_load_weather`, used when `supports_points_loading(source)`.
+Same structure (fallback merge, `_post_load_stack_points!`), but every layer
+is `(points_dim, Ti)`/`(points_dim,)` instead of `(X, Y, Ti)`.
+"""
+function _load_weather_points(source::Type, points_dim, years)
+    primary_stack = _load_layers_at_points(weather_loader(source), source,
+                                           primary_layers(source), points_dim, years)
+    baseline = fallback_source(source)
+    stack = if baseline === nothing
+        RasterStack(primary_stack)
+    else
+        fallback_stack = _load_layers_at_points(weather_loader(baseline), baseline,
+                                                fallback_layers(source), points_dim, years)
+        fallback_stack = _match_fallback_resolution_points(source, baseline, fallback_stack,
+                                                           primary_stack, years)
+        RasterStack(merge(primary_stack, fallback_stack))
+    end
+    stack = Rasters.replace_missing(stack, NaN)
+    return _post_load_stack_points!(source, stack, years, points_dim)
+end
+
+_match_fallback_resolution_points(source::Type, baseline::Type, layers::NamedTuple, template::NamedTuple, years) =
+    _match_fallback_resolution_points(temporal_resolution(source), temporal_resolution(baseline), layers, template, years)
+_match_fallback_resolution_points(::T, ::T, layers::NamedTuple, _template, _years) where {T <: TemporalResolution} = layers
+function _match_fallback_resolution_points(::DailyResolution, ::MonthlyResolution, layers::NamedTuple,
+                                           template::NamedTuple, years)
+    ref = first(values(template))
+    names = keys(layers)
+    return NamedTuple{names}(map(l -> _monthly_to_daily_points(l, ref, years), values(layers)))
+end
+_match_fallback_resolution_points(target::TemporalResolution, base::TemporalResolution, ::NamedTuple, _template, _years) =
+    error("No resolution-matching path from $(typeof(base)) to $(typeof(target)) for a weather fallback (points mode)")
+
+"""
+    _post_load_stack_points!(source, stack, years, points_dim) -> RasterStack
+
+Points-mode counterpart of `_post_load_stack!`. Defaults to `_post_load_stack!`
+itself; override only when the area-mode post-load step assumes a spatial
+grid (e.g. resampling a separately-fetched elevation layer onto it).
+"""
+_post_load_stack_points!(source::Type, stack, years, _points_dim) = _post_load_stack!(source, stack, years)
+
 # Resample a monthly climatology onto `ref`'s grid, then repeat each of its
 # 12*nyears slices across every real day of that month (leap-aware), reusing
 # `ref`'s own Ti axis. Setup-time only.
@@ -457,6 +512,25 @@ function _monthly_to_daily(layer::AbstractRaster, ref::AbstractRaster, years)
         end
     end
     return Raster(out, (dims(resampled)[1:2]..., ti); crs = crs(resampled))
+end
+
+# Points-mode `_monthly_to_daily` -- no resample needed, points already sit at
+# their own native-grid location.
+function _monthly_to_daily_points(layer::AbstractRaster, ref::AbstractRaster, years)
+    data = parent(layer)
+    pdim = dims(layer, 1)
+    ti = dims(ref, Ti)
+    out = similar(data, size(data, 1), length(ti))
+    years_v = collect(years)
+    d = 0
+    for (yi, y) in enumerate(years_v), m in 1:12
+        @views month_col = data[:, (yi - 1) * 12 + m]
+        for _ in 1:Dates.daysinmonth(y, m)
+            d += 1
+            out[:, d] .= month_col
+        end
+    end
+    return Raster(out, (pdim, ti))
 end
 
 # Resample a daily layer onto `ref`'s grid, then place each day's value at
@@ -488,15 +562,12 @@ end
 # ---------------------------------------------------------------------------
 
 # Fetches `fetch(name, item)` for every (name, item) pair over `fields ×
-# items` on worker threads; each opens its own file handle, so this is safe
-# even though NetCDF/GDAL reads aren't internally threaded (~3x speedup on
-# BARRA's network archive, values identical to sequential). A one-off HDF5
-# "wrong B-tree signature" corruption during a full-scale run traced to an
-# external process overwriting those files concurrently, not a thread bug here.
+# items`. Sequential -- GDAL/HDF5's NetCDF driver isn't safely reentrant
+# across OS threads (confirmed: `Threads.@threads` here hangs intermittently).
 function _parallel_fetch(fetch, fields::Tuple, items)
     nf, ni = length(fields), length(items)
     rasters = Matrix{Any}(undef, nf, ni)
-    Threads.@threads for idx in 1:(nf * ni)
+    for idx in 1:(nf * ni)
         fi, ii = fldmod1(idx, ni)
         rasters[fi, ii] = fetch(fields[fi], items[ii])
     end
@@ -524,6 +595,175 @@ function _load_layers(::MonthlyTimeSeries, source, fields::Tuple, area::Extent, 
     end
     layers = map(fi -> cat(rasters[fi, :]...; dims = Ti), 1:length(fields))
     return NamedTuple{fields}(Tuple(layers))
+end
+
+# ---------------------------------------------------------------------------
+# Points-native loading (`MicroVectorProblem`) -- extracts each point's own
+# series directly from a lazy `Raster` instead of cropping a whole area first.
+# ---------------------------------------------------------------------------
+
+function _load_field_at_points(source, name, points_dim; kw...)
+    lazy_r = Raster(source, name; lazy = true, kw...)
+    _extract_lazy_at_points(lazy_r, points_dim)
+end
+
+# Split out so it's testable against a plain local lazy `Raster`, without a
+# `RasterDataSource`/network round trip. `open(lazy_r) do ... end` matters:
+# without it, a bare `FileArray` opens/closes the file on every call.
+function _extract_lazy_at_points(lazy_r::Raster, points_dim)
+    coords = lookup(points_dim)
+    open(lazy_r) do orast
+        if ndims(orast) >= 3
+            other = first(otherdims(orast, (X, Y)))
+            cols = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(permutedims(reduce(hcat, map(parent, cols))), (points_dim, other))
+        else
+            vals = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(collect(vals), (points_dim,))
+        end
+    end
+end
+
+function _load_layers_at_points(::YearlyTimeSeries, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    rasters = _parallel_fetch(fields, years) do name, yr
+        @info "  loading $source $name $yr (points)..."
+        _load_field_at_points(source, name, points_dim; date = Date(yr), extras...)
+    end
+    layers = map(fi -> cat(rasters[fi, :]...; dims = Ti), 1:length(fields))
+    return NamedTuple{fields}(Tuple(layers))
+end
+
+function _load_layers_at_points(::MonthlyTimeSeries, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    year_months = [Date(y, m) for y in years for m in 1:12]
+    rasters = _parallel_fetch(fields, year_months) do name, d
+        @info "  loading $source $name $(year(d))-$(month(d)) (points)..."
+        _load_field_at_points(source, name, points_dim; date = d, extras...)
+    end
+    layers = map(fi -> cat(rasters[fi, :]...; dims = Ti), 1:length(fields))
+    return NamedTuple{fields}(Tuple(layers))
+end
+
+function _load_layers_at_points(::DailyFiles, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    dates = _daily_date_sequence(years)
+    nsteps = length(dates)
+    for name in fields
+        @info "  loading $source $name ($nsteps daily files, points)..."
+    end
+    rasters = _parallel_fetch(fields, dates) do name, d
+        _load_field_at_points(source, name, points_dim; date = d, extras...)
+    end
+    layers = map(1:length(fields)) do fi
+        Raster(reduce(hcat, map(parent, @view rasters[fi, :])), (points_dim, Ti(1:nsteps)))
+    end
+    return NamedTuple{fields}(Tuple(layers))
+end
+
+# 12 monthly point values tiled across `nyears`; shared by `MonthlyClimatology`
+# and `FutureMonthlyClimatology` (the latter via an extra `date` kwarg).
+function _monthly_climatology_at_points(source, name, points_dim, nyears; kw...)
+    monthly = map(m -> _load_field_at_points(source, name, points_dim; month = m, kw...), 1:12)
+    data = reduce(hcat, map(parent, monthly))
+    tiled = nyears == 1 ? data : repeat(data, 1, nyears)
+    return Raster(tiled, (points_dim, Ti(1:(12 * nyears))))
+end
+
+function _load_layers_at_points(::MonthlyClimatology, source, fields::Tuple, points_dim, years)
+    nyears = length(years)
+    layers = map(fields) do name
+        @info "  loading $source $name (monthly climatology, points)..."
+        _monthly_climatology_at_points(source, name, points_dim, nyears)
+    end
+    return NamedTuple{fields}(layers)
+end
+
+function _load_layers_at_points(::FutureMonthlyClimatology, source, fields::Tuple, points_dim, years)
+    nyears = length(years)
+    future_date = Date(first(years))
+    layers = map(fields) do name
+        @info "  loading $source $name (future monthly climatology, points, $future_date)..."
+        _monthly_climatology_at_points(source, name, points_dim, nyears; date = future_date)
+    end
+    return NamedTuple{fields}(layers)
+end
+
+function _load_layers_at_points(::MultiBandFutureClimatology, source, fields::Tuple, points_dim, years)
+    nyears = length(years)
+    future_date = Date(first(years))
+    layers = map(fields) do name
+        @info "  loading $source $name (points, $future_date)..."
+        extracted = _load_field_at_points(source, name, points_dim; date = future_date)
+        size(extracted, 2) == 12 || error(
+            "$source: expected a 12-month multi-band file for $name, got $(size(extracted, 2)) bands")
+        data = parent(extracted)
+        tiled = nyears == 1 ? data : repeat(data, 1, nyears)
+        Raster(tiled, (points_dim, Ti(1:(12 * nyears))))
+    end
+    return NamedTuple{fields}(layers)
+end
+
+function _load_layers_at_points(::SingleFileBands, source, fields::Tuple, points_dim, years)
+    nyears = length(years)
+    @info "  loading $source $(fields) (points)..."
+    path = getraster(source)
+    coords = lookup(points_dim)
+    layers = open(RasterStack(path; name = fields, lazy = true)) do raw
+        nsteps = 1
+        for name in fields
+            ndims(raw[name]) >= 3 && (nsteps = size(raw[name], 3); break)
+        end
+        ntotal = nsteps * nyears
+        map(fields) do name
+            lyr = raw[name]
+            if ndims(lyr) == 2
+                vals = collect(lyr[X(Near(x)), Y(Near(y))] for (x, y) in coords)
+                tiled = repeat(reshape(vals, length(vals), 1); outer = (1, ntotal))
+            else
+                cols = [lyr[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+                data = permutedims(reduce(hcat, map(parent, cols)))
+                tiled = nyears == 1 ? data : repeat(data, 1, nyears)
+            end
+            Raster(tiled, (points_dim, Ti(1:ntotal)))
+        end
+    end
+    return NamedTuple{fields}(Tuple(layers))
+end
+
+function _load_layers_at_points(::HourlyZarrStore, source, fields::Tuple, points_dim, years)
+    cloud_source = getraster(source)
+    full_stack = RasterStack(cloud_source.url; source = Rasters.Zarrsource(), lazy = true)
+    time_start = DateTime(first(years), 1, 1, 0)
+    time_end = DateTime(last(years), 12, 31, 23)
+    coords = lookup(points_dim)
+    layers = map(fields) do name
+        long_name = layername(source, name)
+        @info "  loading $source $name ($long_name, points)..."
+        windowed = view(getproperty(full_stack, Symbol(long_name)), Ti(time_start .. time_end))
+        cols = [read(view(windowed, X(Near(x)), Y(Near(y)))) for (x, y) in coords]
+        Raster(permutedims(reduce(hcat, map(parent, cols))), (points_dim, dims(windowed, Ti)))
+    end
+    return NamedTuple{fields}(layers)
+end
+
+# Points-mode equivalents of `_daily_to_hourly_midnight`/`_static_to_ti` --
+# those use `Rasters.resample` (GDAL), which needs real X/Y grid dims and
+# rejects a degenerate points axis.
+function _daily_to_hourly_midnight_points(daily::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(daily, 1)
+    out = zeros(eltype(daily), length(pdim), length(ti))
+    for d in axes(daily, 2)
+        out[:, (d - 1) * 24 + 1] .= @view daily[:, d]
+    end
+    return Raster(out, (pdim, ti))
+end
+
+function _static_to_ti_points(value::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(value, 1)
+    return Raster(repeat(parent(value), 1, length(ti)), (pdim, ti))
 end
 
 function _load_layers(::MonthlyClimatology, source, fields::Tuple, area::Extent, years)

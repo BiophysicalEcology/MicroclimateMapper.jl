@@ -222,6 +222,10 @@ function CommonSolve.init(problem::MicroVectorProblem)
     # needs cloud cover. Terrain must be resolved first (above) regardless.
     weather = if model.solar_only && !model.cloud_correct_solar
         RasterStack()
+    elseif !haskey(data, :weather) && supports_points_loading(weather_source)
+        # Points-native fast path (see `_load_weather_points`).
+        weather_native = _load_weather_points(weather_source, points_dim, years)
+        weather_native[Ti(ti_start:ti_end)]
     else
         weather_area = Extents.buffer(area,
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
