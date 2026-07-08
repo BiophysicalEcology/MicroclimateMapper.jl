@@ -7,6 +7,7 @@ authors = ["Michael Kearney and Rafael Schouten"]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 CommonSolve = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
 ConstructionBase = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 FillArrays = "1a297f60-69ca-5386-bcde-b61e274b549b"
@@ -37,13 +38,8 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 [sources]
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
 Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
-# Not yet registered.
 PointDataSources = {rev = "main", url = "https://github.com/BiophysicalEcology/PointDataSources.jl"}
-# NCEP/CRUCL2/GRIDMET-elevation features aren't released upstream yet —
-# pin to the fork/branch until that PR lands, then drop this override.
 RasterDataSources = {rev = "better_ncep_crucl2_gridmet_elev", url = "https://github.com/mrke/RasterDataSources.jl"}
-# Registered Rasters@0.15.0 doesn't yet allow RasterDataSources 0.8 in its
-# extension compat; PR pending upstream — drop once merged/released.
 Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
 
@@ -57,6 +53,7 @@ CSV = "0.10"
 CommonSolve = "0.2"
 ConstructionBase = "1.6"
 DataFrames = "1"
+DataInterpolations = "9.0.0"
 Dates = "1.11.0"
 Downloads = "1.7.0"
 FillArrays = "1"

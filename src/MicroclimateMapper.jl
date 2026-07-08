@@ -39,6 +39,7 @@ using Geomorphometry: Horn
 using StaticArrays: SVector
 using FillArrays: Fill
 using ConstructionBase: setproperties
+using DataInterpolations: CubicSpline, ExtrapolationType
 
 export
     # Lapse rate types
@@ -62,6 +63,12 @@ export
     strip_to_canonical,
     load_cpcsoil,
     terrain,
+    # Soil texture -> hydraulic profile
+    build_soil_profile,
+    PedotransferModel,
+    CosbyUnivariate,
+    CosbyMultivariate,
+    Campbell1985,
     # Solar output
     SolarOutputLayer,
     SOLAR_BROADBAND,
@@ -77,6 +84,10 @@ include("utils/geocode.jl")
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
+include("soil/pedotransfer.jl")
+include("soil/soilgrids.jl")
+include("soil/slga.jl")
+include("soil/soil_profile_builder.jl")
 include("mesoclimate/lapse_rate.jl")
 include("mesoclimate/cloud.jl")
 include("landcover/landcover.jl")
