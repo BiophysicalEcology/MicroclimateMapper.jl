@@ -11,4 +11,5 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 
 [sources]
 Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
-RasterDataSources = {rev = "better_ncep_crucl2", url = "https://github.com/mrke/RasterDataSources.jl"}
+RasterDataSources = {rev = "better_ncep_crucl2_gridmet_elev", url = "https://github.com/mrke/RasterDataSources.jl"}
+Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}
