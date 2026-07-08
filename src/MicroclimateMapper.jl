@@ -19,6 +19,7 @@ using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation
 using GeoFormatTypes
 using GeoInterface
 using RasterDataSources
+using PointDataSources
 using NCDatasets       # triggers Rasters NCDatasets extension for NetCDF support
 using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 # ZarrDatasets activates Rasters' Zarr extension for ARCO-ERA5 — currently
@@ -82,6 +83,7 @@ include("landcover/landcover.jl")
 include("landcover/earthenv.jl")
 include("landcover/modis.jl")
 include("climate/weather.jl")
+include("climate/pointquery.jl")
 include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
@@ -92,6 +94,8 @@ include("climate/ncep_hourly.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
+include("climate/silo.jl")
+include("climate/barra.jl")
 include("common.jl")
 include("solar/solar_output.jl")
 include("raster.jl")

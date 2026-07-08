@@ -32,3 +32,22 @@ function weather_variables(::Type{<:GRIDMET})
 end
 
 _gridmet_percent_to_fraction(raw) = raw / 100.0
+
+# :elev is a static file on its own grid — resample onto the loaded layers'
+# grid and tile across Ti (as CRUCL2 does for :elv) so it slices cleanly
+# alongside the other layers.
+function _post_load_stack!(::Type{<:GRIDMET}, stack, _years)
+    template = first(values(stack))
+    path = getraster(GRIDMET, :elev)
+    elev_raw = read(Raster(path; lazy = true)[Dim{:day}(1)])
+    elev_2d = Rasters.replace_missing(
+        Rasters.resample(elev_raw; to = dims(template, (X, Y))), NaN)
+    ti = dims(template, Ti)
+    tiled = repeat(reshape(parent(elev_2d), size(elev_2d)..., 1); outer = (1, 1, length(ti)))
+    elev = Raster(tiled, (dims(elev_2d)..., ti); crs = crs(elev_2d))
+    names = keys(stack)
+    return RasterStack(NamedTuple{(names..., :elev)}((map(n -> stack[n], names)..., elev)))
+end
+
+weather_grid_elevation(::Type{<:GRIDMET}, weather, I) =
+    Float64(weather[:elev][I..., Ti(1)]) * u"m"

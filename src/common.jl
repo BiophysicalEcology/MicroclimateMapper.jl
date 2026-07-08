@@ -400,26 +400,22 @@ function _build_inputs_and_pool(;
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
-    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
-    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
-    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))"
-    @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
-    @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
-    @info "model: threads:         $(Threads.nthreads())"
-
     resolution = temporal_resolution(weather_source)
-    # `solar_ndays` is the number of distinct solar-geometry days per year —
-    # 365 for daily/hourly/sub-daily sources, 12 for monthly. This drives
-    # scratch.solar.out sizing. Using steps_per_year here would over-allocate
-    # for HourlyResolution (8760 × 24 entries instead of 365 × 24).
-    solar_ndays = _solar_ndays_per_year(resolution) * length(years)
+    # `solar_ndays` is the total number of distinct solar-geometry days across
+    # `years` — one per real calendar day for daily/hourly/sub-daily sources
+    # (366 in a leap year), 12 per year for monthly. This drives
+    # scratch.solar.out sizing, and must match `allocate_weather_buffers`'
+    # `days_of_year` length exactly (`_days_of_year` is the single source of
+    # truth for both). Using a flat `365 * length(years)` here would
+    # under-allocate whenever `years` spans a leap year.
+    solar_ndays = length(_days_of_year(resolution, years))
     time_mode = _time_mode(resolution)
     nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
     # `days` is the doy vector: one per unique day (daily/hourly) or one per
     # selected month (monthly). Solar radiation is computed for each entry × 24 hours.
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, length(years)),
+        weather = allocate_weather_buffers(weather_source, years),
         solar = (;
             out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),

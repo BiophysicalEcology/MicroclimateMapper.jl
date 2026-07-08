@@ -1,6 +1,7 @@
 # ERA5 bindings — hourly global reanalysis from the ARCO-ERA5 cloud-optimised
-# Zarr store. 0.25° resolution, 1940-present (~3 month lag), 8760 timesteps
-# per year (leap-day Feb 29 dropped).
+# Zarr store. 0.25° resolution, 1940-present (~3 month lag), 8760 (or 8784 in
+# a leap year) timesteps per year — the Zarr store is queried by real
+# DateTime range, so Feb 29 is included natively.
 #
 # In hourly mode we bypass the min/max envelope (`environment_minmax = nothing`)
 # and let the solver dispatch on the `::Nothing` path, which reads the five

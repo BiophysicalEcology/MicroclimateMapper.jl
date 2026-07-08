@@ -8,9 +8,16 @@
 # `actual_vapour_pressure` — that's a simplification (the daily mean would
 # need a multi-input merge step we don't yet have). The afternoon value
 # is left unused.
+#
+# AWAP has no native wind field — falls back to CRUCL2's monthly wind
+# climatology (`:wnd`), same as NicheMapR's own SILO/AWAP implementations.
 
 temporal_resolution(::Type{<:AWAP}) = DailyResolution()
 weather_loader(::Type{<:AWAP}) = DailyFiles()
+
+primary_layers(::Type{<:AWAP}) = (:tmax, :tmin, :rainfall, :solar, :vprpress09)
+fallback_layers(::Type{<:AWAP}) = (:wnd,)
+fallback_source(::Type{<:AWAP}) = CRUCL2
 
 function weather_variables(::Type{<:AWAP})
     (
@@ -25,5 +32,7 @@ function weather_variables(::Type{<:AWAP})
         # TODO: when a multi-input merge step exists, average with
         # `:vprpress15` for a true daily-mean actual vapour pressure.
         WeatherVariable(:actual_vapour_pressure, :vprpress09, u"hPa"),
+        # Fallback: CRUCL2's monthly wind climatology, expanded to daily.
+        WeatherVariable(:wind_speed, :wnd, u"m/s"),
     )
 end
