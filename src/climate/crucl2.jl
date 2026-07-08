@@ -36,9 +36,9 @@ weather_grid_elevation(::Type{CRUCL2}, weather, I) =
 # native fields (removing :tmp, :dtr, :reh).
 function _post_load_stack!(::Type{CRUCL2}, stack, _)
     ti = dims(stack[:tmp], Ti)
-    sp = dims(stack[:tmp])[1:2]
+    other = otherdims(stack[:tmp], Ti)
     cr = crs(stack[:tmp])
-    wrap(data) = Raster(data, (sp..., ti); crs = cr)
+    wrap(data) = Raster(data, (other..., ti); crs = cr)
 
     tmp = parent(stack[:tmp])
     dtr = parent(stack[:dtr])

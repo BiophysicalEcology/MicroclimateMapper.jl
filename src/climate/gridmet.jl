@@ -51,3 +51,16 @@ end
 
 weather_grid_elevation(::Type{<:GRIDMET}, weather, I) =
     Float64(weather[:elev][I..., Ti(1)]) * u"m"
+
+# Points-mode counterpart of `_post_load_stack!` -- extracts :elev directly at
+# each point instead of resampling a separate grid (no X/Y dims to resample onto).
+function _post_load_stack_points!(::Type{<:GRIDMET}, stack, _years, points_dim)
+    template = first(values(stack))
+    ti = dims(template, Ti)
+    path = getraster(GRIDMET, :elev)
+    elev_pts = _extract_lazy_at_points(Raster(path; lazy = true)[Dim{:day}(1)], points_dim)
+    tiled = repeat(reshape(parent(elev_pts), :, 1); outer = (1, length(ti)))
+    elev = Raster(tiled, (points_dim, ti))
+    names = keys(stack)
+    return RasterStack(NamedTuple{(names..., :elev)}((map(n -> stack[n], names)..., elev)))
+end

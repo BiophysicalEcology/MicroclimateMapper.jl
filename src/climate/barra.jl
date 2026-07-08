@@ -62,3 +62,20 @@ function _load_weather(T::Type{<:BARRA{P, D}}, area::Extent, years) where {P, D}
     stack = RasterStack(merge(met, (; pr, orog)))
     return Rasters.replace_missing(stack, NaN)
 end
+
+supports_points_loading(::Type{<:BARRA}) = true
+
+# Points-native counterpart of `_load_weather`, used by `MicroVectorProblem`.
+function _load_weather_points(T::Type{<:BARRA{P, D}}, points_dim, years) where {P, D}
+    met = _load_layers_at_points(MonthlyTimeSeries(), T,
+        (:tas, :sfcWind, :hurs, :psl, :rsds, :rlds), points_dim, years)
+    ref = first(values(met))
+
+    daily = _load_layers_at_points(MonthlyTimeSeries(), BARRA{P, D, Day}, (:pr,), points_dim, years)
+    pr = _daily_to_hourly_midnight_points(daily.pr, ref)
+
+    orog = _static_to_ti_points(_load_field_at_points(T, :orog, points_dim), ref)
+
+    stack = RasterStack(merge(met, (; pr, orog)))
+    return Rasters.replace_missing(stack, NaN)
+end
