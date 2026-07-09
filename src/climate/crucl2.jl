@@ -38,7 +38,9 @@ function _post_load_stack!(::Type{CRUCL2}, stack, _)
     ti = dims(stack[:tmp], Ti)
     other = otherdims(stack[:tmp], Ti)
     cr = crs(stack[:tmp])
-    wrap(data) = Raster(data, (other..., ti); crs = cr)
+    # Explicitly passing `crs = nothing` (vs. omitting the kwarg) routes
+    # through `setcrs`, which can't `set` a points-mode `MergedLookup` dim.
+    wrap(data) = cr === nothing ? Raster(data, (other..., ti)) : Raster(data, (other..., ti); crs = cr)
 
     tmp = parent(stack[:tmp])
     dtr = parent(stack[:dtr])
