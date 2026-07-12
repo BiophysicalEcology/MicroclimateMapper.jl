@@ -98,5 +98,5 @@ function load_landcover(source::Type{<:MODIS{MCD12Q1}}, area::Extent;
     centre = ((area.X[1] + area.X[2]) / 2, (area.Y[1] + area.Y[2]) / 2)
     path = getraster(source, :LC_Type1;
         lat = centre[2], lon = centre[1], km_ab = 100, km_lr = 100, date)
-    return read(Raster(path; lazy = true))
+    return read(Raster(path; name = :LC_Type1, lazy = true))
 end

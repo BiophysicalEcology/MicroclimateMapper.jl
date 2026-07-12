@@ -135,9 +135,7 @@ function _stack_to_points(stack::RasterStack, points_dim)
     return RasterStack(NamedTuple{names}(extracted))
 end
 
-# Points-mode helpers shared with the (deferred) points-native fast path.
-# Kept separate from `_to_points_with_time` because they operate on a
-# lazy/disk-backed Raster and on already-points-shaped rasters respectively.
+# Used by weather.jl's points-native fast path (_load_field_at_points).
 
 function _extract_lazy_at_points(lazy_r::Raster, points_dim)
     coords = lookup(points_dim)
@@ -264,6 +262,9 @@ function CommonSolve.init(problem::MicroVectorProblem)
     # needs cloud cover. Terrain must be resolved first (above) regardless.
     weather = if model.solar_only && !model.cloud_correct_solar
         RasterStack()
+    elseif !haskey(data, :weather) && supports_points_loading(weather_source)
+        weather_native = _load_weather_points(weather_source, points_dim, years)
+        weather_native[Ti(ti_start:ti_end)]
     else
         weather_area = Extents.buffer(area,
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
@@ -283,17 +284,18 @@ function CommonSolve.init(problem::MicroVectorProblem)
 
     canonical_overrides = _extract_canonical_overrides(_canonical_data(data), points_dim)
 
+    mask = Raster(trues(length(points_dim)), (points_dim,))
+
     cloud_constants = _build_cloud_constants()
     solar_pairs = _make_solar_pairs(
         _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
     build_inputs, cache_pool = _build_inputs_and_pool(;
-        model, weather_source, weather, terrain,
+        model, weather_source, weather, terrain, mask,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
         soil_profile, target_timestep = target,
     )
 
-    mask = Raster(trues(length(points_dim)), (points_dim,))
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, mask, cache_pool,

@@ -50,7 +50,7 @@ function load_landcover(::Type{T}, area::Extent) where {T<:EarthEnv{<:LandCover}
     class_names = keys(default_landcover_albedo(T))
     layers = map(class_names) do name
         path = getraster(T, name)
-        crop(Raster(path; lazy=true); to=area, touches=true) |> read
+        crop(Raster(path; name, lazy=true); to=area, touches=true) |> read
     end
     return RasterStack(NamedTuple{class_names}(layers))
 end

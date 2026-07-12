@@ -299,7 +299,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
         _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
     @info "init: building cache pool..."
     build_inputs, cache_pool = _build_inputs_and_pool(;
-        model, weather_source, weather, terrain,
+        model, weather_source, weather, terrain, mask,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
         soil_profile, target_timestep = target,

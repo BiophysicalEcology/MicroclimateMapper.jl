@@ -175,6 +175,8 @@ end
         (first(candidates), _names_absent(own, Base.tail(candidates))...)
 @inline _extra_getraster_kwargs(::Type) = (;)
 
+@inline supports_points_loading(::Type) = true
+
 # A source's grid elevation is just its declared `Elevation()` quantity —
 # static, no Ti axis. Sources that don't declare it get `nothing` and fall
 # back to the site DEM elevation.
@@ -215,6 +217,26 @@ function _load_weather(source::Type, area::Extent, years)
     return stack
 end
 
+function _load_weather_points(source::Type, points_dim, years)
+    primary_stack = _load_canonical_points(source, layers(source), points_dim, years)
+    baseline = fallback_source(source)
+    stack = baseline === nothing ?
+        RasterStack(primary_stack) :
+        RasterStack(merge(primary_stack,
+            _load_canonical_points(baseline, fallback_layers(source), points_dim, years)))
+    stack = Rasters.replace_missing(stack, NaN)
+    cal = weather_calendar(source)
+    native = native_timestep(source)
+    expected = length(_days_of_year(cal, years)) * samples_per_day(native)
+    ref = _first_ti_layer(stack)
+    n = length(dims(ref, Ti))
+    n == expected || error(
+        "$(nameof(source)): loaded Ti=$n, but the source declares $expected " *
+        "($(nameof(typeof(cal))) × " *
+        "$(nameof(typeof(native))), $(length(years)) years)")
+    return stack
+end
+
 @inline _first_ti_layer(stack::RasterStack) =
     first(l for l in values(stack) if hasdim(l, Ti))
 
@@ -226,8 +248,9 @@ function _load_layers(::YearlyTimeSeries, source, fields::Tuple, area::Extent, y
     extras = _extra_getraster_kwargs(source)
     layers = map(fields) do name
         per_year = map(years) do yr
+            @info "  loading $source $name $yr..."
             path = getraster(source, name; date = Date(yr), extras...)
-            read(crop(Raster(path; lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
         end
         cat(per_year...; dims = Ti)
     end
@@ -238,8 +261,9 @@ function _load_layers(::MonthlyTimeSeries, source, fields::Tuple, area::Extent, 
     dates = _monthly_date_sequence(years)
     layers = map(fields) do name
         per_month = map(dates) do d
+            @info "  loading $source $name $(year(d))-$(month(d))..."
             path = getraster(source, name; date = d, extras...)
-            read(crop(Raster(path; lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
         end
         cat(per_month...; dims = Ti)
     end
@@ -248,7 +272,8 @@ end
 function _load_layers(::MonthlyClimatology, source, fields::Tuple, area::Extent, years)
     nyears = length(years)
     layers = map(fields) do name
-        _build_monthly_climatology(area, nyears) do month
+        @info "  loading $source $name (monthly climatology)..."
+        _build_monthly_climatology(area, nyears, name) do month
             getraster(source, name; month)
         end
     end
@@ -258,7 +283,8 @@ function _load_layers(::MonthlyClimatologyPeriod, source, fields::Tuple, area::E
     nyears = length(years)
     period_date = Date(first(years))
     layers = map(fields) do name
-        _build_monthly_climatology(area, nyears) do month
+        @info "  loading $source $name (monthly climatology, $period_date)..."
+        _build_monthly_climatology(area, nyears, name) do month
             getraster(source, name; date = period_date, month)
         end
     end
@@ -269,8 +295,9 @@ function _load_layers(::MultiBandClimatologyPeriod, source, fields::Tuple,
     nyears = length(years)
     period_date = Date(first(years))
     layers = map(fields) do name
+        @info "  loading $source $name ($period_date)..."
         path = getraster(source, name; date = period_date)
-        full = read(crop(Raster(path; lazy = true); to = area, touches = true))
+        full = read(crop(Raster(path; name, lazy = true); to = area, touches = true))
         # File holds 12 months along the 3rd dim (Band or Ti, depending on
         # the format). Pull out the data array, tile across years, and re-
         # wrap with a proper `Ti` axis.
@@ -286,6 +313,7 @@ end
 function _load_layers(::SingleFileBands, source, fields::Tuple, area::Extent, years)
     nyears = length(years)
     load_area, restore_dims = _native_lon_crop(longitude_convention(source), area)
+    @info "  loading $source $fields..."
     path = getraster(source; _extra_getraster_kwargs(source)...)
     raw = read(crop(RasterStack(path; name = fields, lazy = true);
                     to = load_area, touches = true))
@@ -312,9 +340,10 @@ function _load_layers(::DailyFiles, source, fields::Tuple, area::Extent, years)
     dates = _daily_date_sequence(years)
     nsteps = length(dates)
     layers = map(fields) do name
+        @info "  loading $source $name ($nsteps daily files, $(first(dates)) to $(last(dates)))..."
         per_day = map(dates) do d
             path = getraster(source, name; date = d, extras...)
-            read(crop(Raster(path; lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
         end
         first_day = first(per_day)
         spatial_dims = dims(first_day)
@@ -329,6 +358,7 @@ function _load_layers(::ContiguousTimeSeries, source, fields::Tuple, area::Exten
     time_start = DateTime(first(years), 1, 1, 0)
     time_end = DateTime(last(years), 12, 31, 23)
     layers = map(fields) do name
+        @info "  loading $source $name..."
         long_name = layername(source, name)
         raw = getproperty(full_stack, Symbol(long_name))
         read(view(raw,
@@ -336,6 +366,52 @@ function _load_layers(::ContiguousTimeSeries, source, fields::Tuple, area::Exten
             Y(area.Y[1] .. area.Y[2]),
             Ti(time_start .. time_end),
         ))
+    end
+    return NamedTuple{fields}(layers)
+end
+
+function _load_field_at_points(source, name, points_dim; kw...)
+    lazy_r = Raster(source, name; lazy = true, kw...)
+    return _extract_lazy_at_points(lazy_r, points_dim)
+end
+
+function _load_layers_at_points(loader::Loader, source, fields::Tuple, points_dim, years)
+    area_layers = _load_layers(loader, source, fields, _points_bbox(points_dim), years)
+    return NamedTuple{fields}(map(l -> _to_points(l, points_dim), values(area_layers)))
+end
+
+function _load_layers_at_points(::YearlyTimeSeries, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    layers = map(fields) do name
+        per_year = map(years) do yr
+            @info "  loading $source $name $yr (points)..."
+            _load_field_at_points(source, name, points_dim; date = Date(yr), extras...)
+        end
+        cat(per_year...; dims = Ti)
+    end
+    return NamedTuple{fields}(layers)
+end
+function _load_layers_at_points(::MonthlyTimeSeries, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    dates = _monthly_date_sequence(years)
+    layers = map(fields) do name
+        per_month = map(dates) do d
+            @info "  loading $source $name $(year(d))-$(month(d)) (points)..."
+            _load_field_at_points(source, name, points_dim; date = d, extras...)
+        end
+        cat(per_month...; dims = Ti)
+    end
+    return NamedTuple{fields}(layers)
+end
+function _load_layers_at_points(::DailyFiles, source, fields::Tuple, points_dim, years)
+    extras = _extra_getraster_kwargs(source)
+    dates = _daily_date_sequence(years)
+    layers = map(fields) do name
+        @info "  loading $source $name ($(length(dates)) daily files, $(first(dates)) to $(last(dates)), points)..."
+        per_day = map(dates) do d
+            _load_field_at_points(source, name, points_dim; date = d, extras...)
+        end
+        cat(per_day...; dims = Ti)
     end
     return NamedTuple{fields}(layers)
 end
@@ -385,10 +461,10 @@ function _static_to_ti(layer::AbstractRaster, ref::AbstractRaster)
 end
 
 
-function _build_monthly_climatology(path_for, area::Extent, nyears::Int)
+function _build_monthly_climatology(path_for, area::Extent, nyears::Int, name)
     monthly = map(1:12) do m
         path = path_for(m)
-        read(crop(Raster(path; lazy = true); to = area, touches = true))
+        read(crop(Raster(path; name, lazy = true); to = area, touches = true))
     end
     first_monthly = first(monthly)
     spatial_dims = dims(first_monthly)
@@ -420,6 +496,29 @@ function _load_canonical(source, names::Tuple, area::Extent, years)
     return _canonical_keyed(vars, merge(ti_stack, static_stack))
 end
 
+function _load_canonical_points(source, names::Tuple, points_dim, years)
+    vars = _select_variables(variables(source), names)
+    ti_vars, static_vars = _split_static(vars)
+    ti_stack = _load_layers_at_points(loader(source), source,
+                                      _unique_native_fields(ti_vars), points_dim, years)
+    static_fields = _unique_native_fields(static_vars)
+    static_stack = if isempty(static_fields)
+        NamedTuple()
+    else
+        area = _points_bbox(points_dim)
+        native = _load_static(source, static_fields, area)
+        NamedTuple{static_fields}(map(l -> _to_points(l, points_dim), values(native)))
+    end
+    return _canonical_keyed(vars, merge(ti_stack, static_stack))
+end
+
+function _points_bbox(points_dim)
+    coords = lookup(points_dim)
+    lons = first.(coords); lats = last.(coords)
+    return Extents.buffer(Extent(X = extrema(lons), Y = extrema(lats)),
+        (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+end
+
 # Compile-time partition of a variables tuple into (Ti-varying, static)
 # using method dispatch on the Variable's quantity type parameter.
 @inline _split_static(vars::Tuple) = _split_static((), (), vars)
@@ -442,6 +541,7 @@ end
 _load_static(_loader, _source, ::Tuple{}, _area) = NamedTuple()
 function _load_static(::Loader, source, fields::Tuple, area::Extent)
     layers = map(fields) do name
+        @info "  loading $source $name (static)..."
         path = getraster(source, name)
         read(crop(Raster(path; name, lazy = true); to = area, touches = true))
     end
@@ -692,11 +792,13 @@ end
 abstract type EnvSlot end
 struct EnvHourly <: EnvSlot end
 struct EnvDaily  <: EnvSlot end
+struct EnvStatic <: EnvSlot end   # no Ti axis -- read separately via weather_grid_elevation, never per-timestep
 
 @inline env_slot(::Sample)                = EnvHourly()
 @inline env_slot(::Rainfall{DailyTotal})  = EnvDaily()
 @inline env_slot(::SoilTemperature{Mean}) = EnvDaily()
 @inline env_slot(::SoilMoisture)          = EnvDaily()
+@inline env_slot(::Elevation)             = EnvStatic()
 @inline env_slot(v::Variable)             = env_slot(quantity(v))
 
 # Assembly-time parent buffer for a slot.
@@ -1043,6 +1145,11 @@ function derive!(s::ActualVapourPressure, buffers, ctx)
     elseif hasproperty(buffers, :humidity)
         @inbounds for k in eachindex(avp)
             avp[k] = buffers.humidity[k] * vapour_pressure(method, buffers.mean_temperature[k])
+        end
+    elseif hasproperty(buffers, :reference_humidity)
+        # Sub-daily-native sources (e.g. BARRA): hourly RH paired with that hour's reference_temperature.
+        @inbounds for k in eachindex(avp)
+            avp[k] = buffers.reference_humidity[k] * vapour_pressure(method, buffers.reference_temperature[k])
         end
     else
         _vapour_pressure_from_specific_humidity!(avp,

@@ -22,7 +22,7 @@ texture_variables(::Type{SoilGrids}) = (
 # Reduce each depth-bin raster to one value (single uniform profile, not per-pixel).
 function _texture_values_from_paths(paths, area::Extent, var::TextureVariable)
     map(paths) do path
-        window = read(crop(Raster(path; lazy = true); to = area, touches = true))
+        window = read(crop(Raster(path; name = native_field(var), lazy = true); to = area, touches = true))
         var.transform(mean(skipmissing(window))) * var.unit
     end
 end
