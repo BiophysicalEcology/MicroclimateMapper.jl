@@ -50,7 +50,7 @@ per-run data overrides.
       `mean_temperature`, `cloud_cover`). Each as a `Raster` in canonical
       units; resampled to the run template automatically.
 """
-@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,DT<:Union{Date,AbstractRange{Date}},T,SP<:SoilProfile,IT,D<:NamedTuple}
+@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,DT<:Union{Date,AbstractRange{Date}},T,SP<:SoilProfile,IT,D<:NamedTuple,TC<:Timestep}
     model::M
     area::A
     dates::DT
@@ -58,6 +58,8 @@ per-run data overrides.
     soil_profile::SP
     init::IT = nothing
     data::D = (;)
+    # Target output timestep — the step within a day. Default hourly.
+    timestep::TC = Hourly()
 end
 
 # Positional-`model` convenience: `MicroRasterProblem(model; area, dates, ...)`.
@@ -200,8 +202,8 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # unless the user already supplied data.soil_moisture explicitly.
     # Skipped in solar-only mode — weather is not loaded at all.
     if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
-        data = merge(data, (; soil_moisture = _load_soil_moisture(
-            soil_moisture_source, _to_extent(area), _years_from_dates(dates))))
+        data = merge(data, (; soil_moisture = _load_prescribed(
+            soil_moisture_source, SoilMoisture(), _to_extent(area), _years_from_dates(dates))))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
@@ -211,14 +213,16 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # Normalise the user-supplied dates to a sorted Vector{Date}.
     dates_vec = _normalise_dates(dates)
     years = _years_from_dates(dates)
-    resolution = temporal_resolution(weather_source)
-    ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
-    anchor_dates = _step_anchor_dates(resolution, dates_vec)
+    calendar = weather_calendar(weather_source)
+    native = native_timestep(weather_source)
+    target = problem.timestep
+    # Ti slicing is in native-timestep units (how the loaded stack is laid out).
+    ti_start, ti_end, days_doy = _ti_range_for_dates(calendar, native, years, dates_vec)
+    anchor_dates = _step_anchor_dates(calendar, dates_vec)
 
     # `area` may be a geometry; loaders need an Extent, but the mask uses the geometry itself.
     extent = _to_extent(area)
-
-    @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
+    @info "init: weather source:   $(weather_source) ($(nameof(typeof(calendar))), $(nameof(typeof(native))) → $(nameof(typeof(target))))"
     @info "init: DEM source:       $(haskey(data, :terrain) ? "skipped (terrain override)" : string(dem_source))"
     @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
     @info "init: roughness height: $(_source_label(roughness_height_source))"
@@ -269,13 +273,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # Surface-property resampling target: the sliced weather template in full mode
     # (has the right grid after resample); template_2d in clear-sky solar-only mode.
     template = (model.solar_only && !model.cloud_correct_solar) ? template_2d : first(values(weather))
-    @info "init: building mask and surface grids..."
-    mask = _build_area_mask(area, template_2d)
-    let n_total = length(terrain.elevation),
-        n_active = mask === nothing ? n_total : count(mask)
-        @info "init: pixels:          $(n_active) active / $(n_total) total"
-    end
-
+    @info "init: building surface grids..."
     albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
     albedo_grid = _resolve_surface_grid(albedo_data, surface_albedo_source,
@@ -285,6 +283,17 @@ function CommonSolve.init(problem::MicroRasterProblem)
 
     canonical_overrides = _resample_canonical_overrides(_canonical_data(data), template)
 
+    @info "init: building active mask..."
+    mask = boolmask(terrain.elevation)
+    for l in values(weather)
+        mask!(mask; with = hasdim(l, Ti) ? view(l, Ti(1)) : l)
+    end
+    area isa Extent || mask!(mask; with = area)
+    for l in values(canonical_overrides)
+        mask!(mask; with = hasdim(l, Ti) ? view(l, Ti(1)) : l)
+    end
+    @info "init: pixels:          $(count(mask)) active / $(length(mask)) total"
+
     cloud_constants = _build_cloud_constants()
     solar_pairs = _make_solar_pairs(
         _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
@@ -293,7 +302,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
-        soil_profile,
+        soil_profile, target_timestep = target,
     )
     @info "init: done"
 

@@ -51,13 +51,15 @@ where the `:point` dim carries a `MergedLookup` of `(x, y)` tuples so
 callers can recover coordinates via `lookup`/`val` or by indexing with
 `X(At(x)), Y(At(y))` selectors.
 """
-@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,DT<:Union{Date,AbstractRange{Date}},SP<:SoilProfile,IT,D<:NamedTuple}
+@kwdef struct MicroVectorProblem{M<:MicroMapModel,PT<:AbstractVector,DT<:Union{Date,AbstractRange{Date}},SP<:SoilProfile,IT,D<:NamedTuple,TC<:Timestep}
     model::M
     points::PT
     dates::DT
     soil_profile::SP
     init::IT = nothing
     data::D = (;)
+    # Target output timestep — the step within a day. Default hourly.
+    timestep::TC = Hourly()
 end
 
 # Positional-`model` convenience: `MicroVectorProblem(model; points, dates, ...)`.
@@ -133,6 +135,44 @@ function _stack_to_points(stack::RasterStack, points_dim)
     return RasterStack(NamedTuple{names}(extracted))
 end
 
+# Points-mode helpers shared with the (deferred) points-native fast path.
+# Kept separate from `_to_points_with_time` because they operate on a
+# lazy/disk-backed Raster and on already-points-shaped rasters respectively.
+
+function _extract_lazy_at_points(lazy_r::Raster, points_dim)
+    coords = lookup(points_dim)
+    open(lazy_r) do orast
+        if ndims(orast) >= 3
+            other = first(otherdims(orast, (X, Y)))
+            cols = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(permutedims(reduce(hcat, map(parent, cols))), (points_dim, other))
+        else
+            vals = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(collect(vals), (points_dim,))
+        end
+    end
+end
+
+# Place a per-point daily total as a single event at each day's first hour
+# (midnight); other hours stay zero. Used by BARRA-style sources whose
+# rainfall arrives daily while the rest of the stack is hourly.
+function _daily_to_hourly_midnight_points(daily::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(daily, 1)
+    out = zeros(eltype(daily), length(pdim), length(ti))
+    for d in axes(daily, 2)
+        out[:, (d - 1) * 24 + 1] .= @view daily[:, d]
+    end
+    return Raster(out, (pdim, ti))
+end
+
+# Broadcast a per-point static value across the Ti axis of `ref`.
+function _static_to_ti_points(value::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(value, 1)
+    return Raster(repeat(parent(value), 1, length(ti)), (pdim, ti))
+end
+
 # Resolve a surface property (albedo / roughness) into a 1-D points-mode
 # Raster. Same input forms as grid mode — the native-resolution result is
 # computed via `_resolve_surface_native` then `_to_points`-extracted.
@@ -178,17 +218,19 @@ function CommonSolve.init(problem::MicroVectorProblem)
     if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
         sm_area = Extents.buffer(_points_extent(points),
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
-        data = merge(data, (; soil_moisture = _load_soil_moisture(soil_moisture_source, sm_area, years)))
+        data = merge(data, (; soil_moisture = _load_prescribed(soil_moisture_source, SoilMoisture(), sm_area, years)))
     end
 
     init_inputs = _resolve_init(problem.init, model.micro_model)
     soil_moisture_available = model.solar_only ? false :
         _has_canonical_input(:soil_moisture, weather_source, data)
-    resolution = temporal_resolution(weather_source)
-    ti_start, ti_end, days_doy = _ti_range_for_dates(resolution, years, dates_vec)
-    anchor_dates = _step_anchor_dates(resolution, dates_vec)
+    calendar = weather_calendar(weather_source)
+    native = native_timestep(weather_source)
+    target = problem.timestep
+    ti_start, ti_end, days_doy = _ti_range_for_dates(calendar, native, years, dates_vec)
+    anchor_dates = _step_anchor_dates(calendar, dates_vec)
 
-    @info "init: weather source:   $(weather_source) ($(nameof(typeof(resolution))))"
+    @info "init: weather source:   $(weather_source) ($(nameof(typeof(calendar))), $(nameof(typeof(native))) → $(nameof(typeof(target))))"
     @info "init: DEM source:       $(dem_source)"
     @info "init: surface albedo:   $(_source_label(surface_albedo_source))"
     @info "init: roughness height: $(_source_label(roughness_height_source))"
@@ -222,10 +264,6 @@ function CommonSolve.init(problem::MicroVectorProblem)
     # needs cloud cover. Terrain must be resolved first (above) regardless.
     weather = if model.solar_only && !model.cloud_correct_solar
         RasterStack()
-    elseif !haskey(data, :weather) && supports_points_loading(weather_source)
-        # Points-native fast path (see `_load_weather_points`).
-        weather_native = _load_weather_points(weather_source, points_dim, years)
-        weather_native[Ti(ti_start:ti_end)]
     else
         weather_area = Extents.buffer(area,
             (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
@@ -252,12 +290,13 @@ function CommonSolve.init(problem::MicroVectorProblem)
         model, weather_source, weather, terrain,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
-        soil_profile,
+        soil_profile, target_timestep = target,
     )
 
+    mask = Raster(trues(length(points_dim)), (points_dim,))
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
-        canonical_overrides, nothing, cache_pool,
+        canonical_overrides, mask, cache_pool,
         (; init_inputs, build_inputs, anchor_dates, solar_pairs),
         cloud_constants,
     )

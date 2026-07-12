@@ -30,7 +30,7 @@ using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
 using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
     ForwardOrdered, ReverseOrdered, span, order, sampling
-using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims
+using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims, otherdims
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
 using Rasters.Extents: Extent
@@ -48,8 +48,10 @@ export
     DryAdiabaticLapseRate,
     SaturatedAdiabaticLapseRate,
     CustomLapseRate,
-    # Weather sources
+    # Weather sources — `NCEP`/`SurfaceFlux` are re-exported from RasterDataSources
+    # (the data-source kind); the timestep is specified separately on the run.
     NCEP,
+    SurfaceFlux,
     # Microclimate drivers
     MicroMapModel,
     MicroRasterProblem,
@@ -61,7 +63,6 @@ export
     reinit!,
     canonical_unit,
     strip_to_canonical,
-    load_cpcsoil,
     terrain,
     # Soil texture -> hydraulic profile
     build_soil_profile,
@@ -81,9 +82,11 @@ export
     load_template
 
 include("utils/geocode.jl")
+include("utils/utils.jl")
 include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
+include("terrain/copernicus_dem.jl")
 include("soil/pedotransfer.jl")
 include("soil/soilgrids.jl")
 include("soil/slga.jl")
@@ -99,14 +102,13 @@ include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
 include("climate/crucl2.jl")
-include("climate/cpcsoil.jl")
 include("climate/ncep.jl")
-include("climate/ncep_hourly.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
 include("climate/silo.jl")
 include("climate/barra.jl")
+include("soil/cpcsoil.jl")
 include("common.jl")
 include("solar/solar_output.jl")
 include("raster.jl")

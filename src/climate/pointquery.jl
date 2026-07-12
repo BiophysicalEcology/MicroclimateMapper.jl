@@ -5,7 +5,7 @@ Loads each layer via `PointDataSources.getpoint` for the point at the centre
 of `area`, instead of downloading/cropping a raster grid. Single-point runs
 only -- `area` must be point-like (near-zero width) or this throws.
 """
-struct PointQuery <: WeatherLoader end
+struct PointQuery <: Loader end
 
 function _load_layers(::PointQuery, source, fields::Tuple, area::Extent, years)
     width_x, width_y = area.X[2] - area.X[1], area.Y[2] - area.Y[1]

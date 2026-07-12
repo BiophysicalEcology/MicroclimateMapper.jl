@@ -218,7 +218,7 @@ _resolve_init(::Nothing, _) = _DEFAULT_INIT
 function _has_canonical_input(name::Symbol, weather_source, data::NamedTuple)
     haskey(data, name) && return true
     weather_source === nothing && return false
-    for var in weather_variables(weather_source)
+    for var in variables(weather_source)
         canonical_name(var) === name && return true
     end
     return false
@@ -252,38 +252,6 @@ _resolve_weather(data::NamedTuple, source, area, years) =
 _to_extent(area::Extent) = area
 _to_extent(area) = GeoInterface.extent(area)
 
-# `Extent` area = no mask (run every pixel); geometry = rasterise into a Bool mask.
-_build_area_mask(::Extent, _template) = nothing
-_build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
-
-@inline _is_active(_I::Tuple, ::Nothing) = true
-@inline _is_active(I::Tuple, mask) = mask[I...]
-
-# Returns true when ANY weather layer or canonical override is NaN at I —
-# ocean, outside the land mask, or a coastal pixel where resampling produced NaN.
-@inline function _is_missing_pixel(weather, canonical_overrides, I)
-    any(values(weather)) do layer
-        isnan(Float64(layer[I..., Ti(1)]))
-    end || any(values(canonical_overrides)) do layer
-        v = hasdim(layer, Ti) ? layer[I..., Ti(1)] : layer[I...]
-        isnan(Float64(v))
-    end
-end
-
-# Solar-only missing check: NaN DEM elevation (ocean / no-data) skips a pixel.
-# Weather is not loaded in solar-only mode so the standard check cannot apply.
-@inline _is_missing_solar_pixel(terrain, I) = isnan(Float64(terrain.elevation[I...]))
-
-_first_active_index(rast, ::Nothing, weather, co) = _first_nonmissing(DimIndices(rast), weather, co)
-function _first_active_index(rast, mask, weather, co)
-    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather, co)
-end
-function _first_nonmissing(indices, weather, co)
-    for I in indices
-        _is_missing_pixel(weather, co, I) || return I
-    end
-    error("All pixels are masked or have missing weather data (ocean?).")
-end
 
 # ---------------------------------------------------------------------------
 # Source-label helper — shared by raster and vector init @info messages
@@ -380,14 +348,6 @@ end
 
 # Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
-# ---------------------------------------------------------------------------
-# Soil-moisture source loader
-# ---------------------------------------------------------------------------
-
-# Default: no soil_moisture_source → nothing (prescribed moisture must come
-# from weather source or data.soil_moisture override).
-_load_soil_moisture(::Nothing, _area, _years) = nothing
-
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
@@ -395,27 +355,32 @@ function _build_inputs_and_pool(;
     model, weather_source, weather, terrain,
     albedo_grid, roughness_grid, canonical_overrides,
     init_inputs, soil_moisture_available, years, days, cloud_constants,
-    soil_profile,
+    soil_profile, target_timestep::Timestep = Hourly(),
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
 
-    resolution = temporal_resolution(weather_source)
+    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))"
+    @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
+    @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
+    @info "model: threads:         $(Threads.nthreads())"
+
+    calendar = weather_calendar(weather_source)
     # `solar_ndays` is the total number of distinct solar-geometry days across
-    # `years` — one per real calendar day for daily/hourly/sub-daily sources
-    # (366 in a leap year), 12 per year for monthly. This drives
-    # scratch.solar.out sizing, and must match `allocate_weather_buffers`'
-    # `days_of_year` length exactly (`_days_of_year` is the single source of
-    # truth for both). Using a flat `365 * length(years)` here would
-    # under-allocate whenever `years` spans a leap year.
-    solar_ndays = length(_days_of_year(resolution, years))
-    time_mode = _time_mode(resolution)
+    # `years` — one per real calendar day for daily/sub-daily sources (366 in
+    # a leap year), 12 per year for monthly. Drives scratch.solar.out sizing,
+    # and must match `allocate_weather_buffers`' `days_of_year` length exactly
+    # (`_days_of_year` is the single source of truth for both).
+    solar_ndays = length(_days_of_year(calendar, years))
+    time_mode = _time_mode(calendar)
     nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
-    # `days` is the doy vector: one per unique day (daily/hourly) or one per
-    # selected month (monthly). Solar radiation is computed for each entry × 24 hours.
+    # `days` is the doy vector: one per unique day (Daily) or one per selected
+    # month (Monthly). Solar radiation is computed for each entry × 24 hours.
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, years),
+        weather = allocate_weather_buffers(weather_source, target_timestep, years),
         solar = (;
             out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),
@@ -427,7 +392,7 @@ function _build_inputs_and_pool(;
     nworkers = min(Threads.nthreads(), npixels)
 
     if model.solar_only
-        @info "model: threads:         $(Threads.nthreads())"
+        @info "model: threads: $(Threads.nthreads())"
         # No ODE needed — pool contains scratch-only workers (no micro field).
         # build_inputs is never called in _solve_solar_only!.
         _build_inputs_noop = (scratch, I) -> nothing
@@ -462,11 +427,13 @@ function _build_inputs_and_pool(;
             albedo = albedo_grid[I...],
             roughness_height = roughness_grid[I...],
         )
+        # TODO: why is this hacked in - there are two elevations
         ge = weather_grid_elevation(weather_source, weather, I)
         env = assemble_weather!(scratch, weather, weather_source, site, I;
             vapour_pressure_method, lapse_rate_model, canonical_overrides,
             grid_elevation = isnothing(ge) ? site.elevation : ge,
-            wind_reference_height = maximum(micro_model.heights))
+            wind_reference_height = maximum(micro_model.heights),
+            target_timestep)
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
             soil_moisture_available, micro_model.depths,
@@ -485,7 +452,10 @@ function _build_inputs_and_pool(;
         )
     end
 
-    first_I = _first_active_index(terrain.elevation, nothing, weather, canonical_overrides)
+    ci = findfirst(mask)
+    isnothing(ci) &&
+        error("All pixels are masked or have missing weather data (ocean?).")
+    first_I = DimIndices(terrain.elevation)[ci]
     npixels = length(terrain.elevation)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
@@ -581,18 +551,15 @@ function CommonSolve.solve!(output::RasterStack, cache::MicroMapCache)
     end
 end
 
-# Pull worker #1 from the pool and solve the first pixel that both passes the
-# missing-data check and actually converges. This pixel sizes the output
-# arrays, so we must find one that completes. Coastal pixels with
-# post-resample NaN in derived quantities can pass `_is_missing_pixel` but
-# still fail the ODE; we skip those silently and try the next candidate.
+# Pull worker #1 from the pool and solve the first mask-active pixel that
+# actually converges. This pixel sizes the output arrays, so we must find one
+# that completes. Coastal pixels with post-resample NaN in derived quantities
+# can still fail the ODE; we skip those silently and try the next candidate.
 function _solve_proto_pixel!(cache)
-    weather = cache.weather
-    mask    = cache.mask
-    proto   = take!(cache.cache_pool)
+    mask  = cache.mask
+    proto = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
-        _is_active(I, mask)       || continue
-        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
+        mask[I...] || continue
         reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
         try
             solve!(proto.micro)
@@ -609,7 +576,6 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
     layers = cache.problem.model.output_layers
     build_inputs = cache.init_inputs.build_inputs
     mask = cache.mask
-    weather = cache.weather
     has_solar = solar_output !== nothing
     solar_pairs = cache.init_inputs.solar_pairs
     wavelengths = has_solar ? cache.cloud_constants.solar_model.wavelengths : nothing
@@ -621,8 +587,7 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
     @info "solve: building work channel ($(length(pixel_indices)) pixels)..."
     for I in pixel_indices
         I == first_I && continue
-        _is_active(I, mask) || continue
-        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
+        mask[I...] || continue
         put!(work, I)
         nwork += 1
     end
@@ -707,10 +672,10 @@ end
 
 # Return the native weather field name that maps to canonical :cloud_cover,
 # or `nothing` when the source does not provide cloud cover.
-# Return the WeatherVariable for :cloud_cover (carries native field name +
+# Return the Variable for :cloud_cover (carries native field name +
 # transform), or nothing if the source does not provide cloud cover.
 function _cloud_weather_variable(weather_source)
-    for var in weather_variables(weather_source)
+    for var in variables(weather_source)
         canonical_name(var) === :cloud_cover && return var
     end
     return nothing
@@ -718,12 +683,12 @@ end
 
 # Fill `factors` (length nsteps) with per-step Ångström sunshine fractions.
 # Each weather Ti step covers `nhours_per_step` consecutive solar output steps
-# (24 for monthly/daily sources). The WeatherVariable transform + unit are
+# (24 for monthly/daily sources). The Variable transform + unit are
 # applied to the raw native field value before clamping to [0, 1] — this
 # mirrors _copy_weather_to_buffers! so the cloud fraction is consistent
 # regardless of whether the native field is already in [0,1] or needs
 # conversion (e.g. CRUCL2 stores sunshine % via transform (100-s)/100).
-function _fill_cloud_factors!(factors, weather, cloud_var::WeatherVariable, I, nhours_per_step)
+function _fill_cloud_factors!(factors, weather, cloud_var::Variable, I, nhours_per_step)
     cloud_layer = getproperty(weather, native_field(cloud_var))
     n_weather = length(lookup(cloud_layer, Ti))
     k = 1
@@ -763,8 +728,7 @@ function _solve_solar_only!(solar_output, cache, solar_pairs)
     work = Channel{eltype(pixel_indices)}(max(length(pixel_indices), 1))
     nwork = 0
     for I in pixel_indices
-        _is_active(I, mask) || continue
-        _is_missing_solar_pixel(terrain, I) && continue
+        mask[I...] || continue
         put!(work, I)
         nwork += 1
     end
