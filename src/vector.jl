@@ -293,9 +293,10 @@ function CommonSolve.init(problem::MicroVectorProblem)
         soil_profile, target_timestep = target,
     )
 
+    mask = Raster(trues(length(points_dim)), (points_dim,))
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
-        canonical_overrides, nothing, cache_pool,
+        canonical_overrides, mask, cache_pool,
         (; init_inputs, build_inputs, anchor_dates, solar_pairs),
         cloud_constants,
     )

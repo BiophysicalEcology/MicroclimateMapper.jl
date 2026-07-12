@@ -2,7 +2,7 @@ using Test
 using Dates
 using MicroclimateMapper
 using MicroclimateMapper: _canonical_data, _is_special_key, _resolve_init, _DEFAULT_INIT,
-    _to_extent, _build_area_mask, _first_active_index, _is_active
+    _to_extent
 using Microclimate: example_microclimate_problem, example_soil_profile
 using RasterDataSources
 using Rasters
@@ -105,45 +105,18 @@ end
     @test haskey(problem2.data, :vapour_pressure_deficit)
 end
 
-@testset "geometry area mask" begin
-    # 10×10 template at 0.01° resolution
-    template = Raster(zeros(10, 10),
-        (X(146.005:0.01:146.095), Y(-35.995:0.01:-35.905)))
-
-    # Triangle covering ~the lower-left quadrant of the template
+@testset "geometry → extent conversion" begin
     poly = GIW.Polygon([[
         (146.00, -36.00),
         (146.05, -36.00),
         (146.00, -35.95),
         (146.00, -36.00),
     ]])
-
     ext = Extent(X = (146.0, 146.1), Y = (-36.0, -35.9))
 
-    # Extent → no mask, no skipping
-    @test _build_area_mask(ext, template) === nothing
     @test _to_extent(ext) === ext
-
-    # Geometry → Bool Raster matching the template's X/Y
-    mask = _build_area_mask(poly, template)
-    @test mask isa AbstractRaster
-    @test eltype(mask) == Bool
-    @test size(mask) == size(template)
-    @test any(mask)
-    @test !all(mask)
-
-    # Geometry → Extent via GeoInterface
     poly_ext = _to_extent(poly)
     @test poly_ext isa Extent
     @test poly_ext.X[1] ≈ 146.00
     @test poly_ext.X[2] ≈ 146.05
-
-    # _is_active branches
-    first_I = first(I for I in DimIndices(template) if mask[I...])
-    any_I = first(DimIndices(template))
-    @test _is_active(any_I, nothing) === true
-    @test _is_active(first_I, mask) === true
-    # find a masked-out cell and confirm _is_active rejects it
-    inactive_I = first(I for I in DimIndices(template) if !mask[I...])
-    @test _is_active(inactive_I, mask) === false
 end

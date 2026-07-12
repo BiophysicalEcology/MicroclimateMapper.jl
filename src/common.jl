@@ -252,38 +252,6 @@ _resolve_weather(data::NamedTuple, source, area, years) =
 _to_extent(area::Extent) = area
 _to_extent(area) = GeoInterface.extent(area)
 
-# `Extent` area = no mask (run every pixel); geometry = rasterise into a Bool mask.
-_build_area_mask(::Extent, _template) = nothing
-_build_area_mask(geom, template) = Rasters.boolmask(geom; to = template)
-
-@inline _is_active(_I::Tuple, ::Nothing) = true
-@inline _is_active(I::Tuple, mask) = mask[I...]
-
-# Returns true when ANY weather layer or canonical override is NaN at I —
-# ocean, outside the land mask, or a coastal pixel where resampling produced NaN.
-@inline function _is_missing_pixel(weather, canonical_overrides, I)
-    any(values(weather)) do layer
-        isnan(Float64(layer[I..., Ti(1)]))
-    end || any(values(canonical_overrides)) do layer
-        v = hasdim(layer, Ti) ? layer[I..., Ti(1)] : layer[I...]
-        isnan(Float64(v))
-    end
-end
-
-# Solar-only missing check: NaN DEM elevation (ocean / no-data) skips a pixel.
-# Weather is not loaded in solar-only mode so the standard check cannot apply.
-@inline _is_missing_solar_pixel(terrain, I) = isnan(Float64(terrain.elevation[I...]))
-
-_first_active_index(rast, ::Nothing, weather, co) = _first_nonmissing(DimIndices(rast), weather, co)
-function _first_active_index(rast, mask, weather, co)
-    _first_nonmissing((I for I in DimIndices(rast) if mask[I...]), weather, co)
-end
-function _first_nonmissing(indices, weather, co)
-    for I in indices
-        _is_missing_pixel(weather, co, I) || return I
-    end
-    error("All pixels are masked or have missing weather data (ocean?).")
-end
 
 # ---------------------------------------------------------------------------
 # Source-label helper — shared by raster and vector init @info messages
@@ -484,7 +452,10 @@ function _build_inputs_and_pool(;
         )
     end
 
-    first_I = _first_active_index(terrain.elevation, nothing, weather, canonical_overrides)
+    ci = findfirst(mask)
+    isnothing(ci) &&
+        error("All pixels are masked or have missing weather data (ocean?).")
+    first_I = DimIndices(terrain.elevation)[ci]
     npixels = length(terrain.elevation)
     build_cache() = let scratch = allocate_scratch()
         (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
@@ -580,18 +551,15 @@ function CommonSolve.solve!(output::RasterStack, cache::MicroMapCache)
     end
 end
 
-# Pull worker #1 from the pool and solve the first pixel that both passes the
-# missing-data check and actually converges. This pixel sizes the output
-# arrays, so we must find one that completes. Coastal pixels with
-# post-resample NaN in derived quantities can pass `_is_missing_pixel` but
-# still fail the ODE; we skip those silently and try the next candidate.
+# Pull worker #1 from the pool and solve the first mask-active pixel that
+# actually converges. This pixel sizes the output arrays, so we must find one
+# that completes. Coastal pixels with post-resample NaN in derived quantities
+# can still fail the ODE; we skip those silently and try the next candidate.
 function _solve_proto_pixel!(cache)
-    weather = cache.weather
-    mask    = cache.mask
-    proto   = take!(cache.cache_pool)
+    mask  = cache.mask
+    proto = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
-        _is_active(I, mask)       || continue
-        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
+        mask[I...] || continue
         reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
         try
             solve!(proto.micro)
@@ -608,7 +576,6 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
     layers = cache.problem.model.output_layers
     build_inputs = cache.init_inputs.build_inputs
     mask = cache.mask
-    weather = cache.weather
     has_solar = solar_output !== nothing
     solar_pairs = cache.init_inputs.solar_pairs
     wavelengths = has_solar ? cache.cloud_constants.solar_model.wavelengths : nothing
@@ -620,8 +587,7 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
     @info "solve: building work channel ($(length(pixel_indices)) pixels)..."
     for I in pixel_indices
         I == first_I && continue
-        _is_active(I, mask) || continue
-        _is_missing_pixel(weather, cache.canonical_overrides, I) && continue
+        mask[I...] || continue
         put!(work, I)
         nwork += 1
     end
@@ -762,8 +728,7 @@ function _solve_solar_only!(solar_output, cache, solar_pairs)
     work = Channel{eltype(pixel_indices)}(max(length(pixel_indices), 1))
     nwork = 0
     for I in pixel_indices
-        _is_active(I, mask) || continue
-        _is_missing_solar_pixel(terrain, I) && continue
+        mask[I...] || continue
         put!(work, I)
         nwork += 1
     end

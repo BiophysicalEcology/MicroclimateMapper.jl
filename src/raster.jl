@@ -273,13 +273,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
     # Surface-property resampling target: the sliced weather template in full mode
     # (has the right grid after resample); template_2d in clear-sky solar-only mode.
     template = (model.solar_only && !model.cloud_correct_solar) ? template_2d : first(values(weather))
-    @info "init: building mask and surface grids..."
-    mask = _build_area_mask(area, template_2d)
-    let n_total = length(terrain.elevation),
-        n_active = mask === nothing ? n_total : count(mask)
-        @info "init: pixels:          $(n_active) active / $(n_total) total"
-    end
-
+    @info "init: building surface grids..."
     albedo_data = get(data, :surface_albedo, nothing)
     roughness_data = get(data, :roughness_height, nothing)
     albedo_grid = _resolve_surface_grid(albedo_data, surface_albedo_source,
@@ -288,6 +282,17 @@ function CommonSolve.init(problem::MicroRasterProblem)
         landcover_source, template, extent, default_landcover_roughness)
 
     canonical_overrides = _resample_canonical_overrides(_canonical_data(data), template)
+
+    @info "init: building active mask..."
+    mask = boolmask(terrain.elevation)
+    for l in values(weather)
+        mask!(mask; with = hasdim(l, Ti) ? view(l, Ti(1)) : l)
+    end
+    area isa Extent || mask!(mask; with = area)
+    for l in values(canonical_overrides)
+        mask!(mask; with = hasdim(l, Ti) ? view(l, Ti(1)) : l)
+    end
+    @info "init: pixels:          $(count(mask)) active / $(length(mask)) total"
 
     cloud_constants = _build_cloud_constants()
     solar_pairs = _make_solar_pairs(
