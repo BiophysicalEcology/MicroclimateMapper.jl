@@ -12,6 +12,7 @@
 weather_calendar(::Type{<:SILO}) = Daily()
 loader(::Type{<:SILO}) = YearlyTimeSeries()
 fallback_source(::Type{<:SILO}) = CRUCL2
+fallback_layers(::Type{<:SILO}) = (:wind_speed,)
 
 function variables(::Type{<:SILO})
     (

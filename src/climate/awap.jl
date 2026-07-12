@@ -6,9 +6,14 @@
 # AWAP measures actual vapour pressure twice a day, at 09:00 and 15:00. Both are
 # declared as timed samples; the within-day vapour-pressure curve and the derived
 # relative humidity follow generically from that.
+#
+# AWAP has no native wind field -- falls back to CRUCL2's monthly wind
+# climatology, same as SILO.
 
 weather_calendar(::Type{<:AWAP}) = Daily()
 loader(::Type{<:AWAP}) = DailyFiles()
+fallback_source(::Type{<:AWAP}) = CRUCL2
+fallback_layers(::Type{<:AWAP}) = (:wind_speed,)
 
 function variables(::Type{<:AWAP})
     (

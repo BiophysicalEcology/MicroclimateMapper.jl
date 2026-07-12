@@ -196,7 +196,9 @@ function _load_weather(source::Type, area::Extent, years)
     stack = baseline === nothing ?
         RasterStack(primary_stack) :
         RasterStack(merge(primary_stack,
-            _load_canonical(baseline, fallback_layers(source), area, years)))
+            _match_fallback_resolution(source, baseline,
+                _load_canonical(baseline, fallback_layers(source), area, years),
+                primary_stack, years)))
     # Source files declare a `missingval`, so loaded eltypes are
     # `Union{Missing, T}`. The per-pixel reader does `value * unit`,
     # which throws `convert(Missing, Quantity)` on any masked cell.
@@ -223,7 +225,9 @@ function _load_weather_points(source::Type, points_dim, years)
     stack = baseline === nothing ?
         RasterStack(primary_stack) :
         RasterStack(merge(primary_stack,
-            _load_canonical_points(baseline, fallback_layers(source), points_dim, years)))
+            _match_fallback_resolution_points(source, baseline,
+                _load_canonical_points(baseline, fallback_layers(source), points_dim, years),
+                primary_stack, years)))
     stack = Rasters.replace_missing(stack, NaN)
     cal = weather_calendar(source)
     native = native_timestep(source)
@@ -434,6 +438,69 @@ function _monthly_date_sequence(years)
         end
     end
     return dates
+end
+
+# Aligns a fallback source's layers onto `source`'s own Ti axis when the two
+# calendars differ (e.g. CRUCL2's 12-month climatology backfilling SILO's
+# daily wind). Same calendar is a no-op; unhandled combinations raise clearly.
+_match_fallback_resolution(source::Type, baseline::Type, layers::NamedTuple, template::NamedTuple, years) =
+    _match_fallback_resolution(weather_calendar(source), weather_calendar(baseline), layers, template, years)
+_match_fallback_resolution(::T, ::T, layers::NamedTuple, _template, _years) where {T <: Calendar} = layers
+function _match_fallback_resolution(::Daily, ::Monthly, layers::NamedTuple, template::NamedTuple, years)
+    ref = first(values(template))
+    return NamedTuple{keys(layers)}(map(l -> _monthly_to_daily(l, ref, years), values(layers)))
+end
+_match_fallback_resolution(target::Calendar, base::Calendar, ::NamedTuple, _template, _years) =
+    error("No calendar-matching path from $(typeof(base)) to $(typeof(target)) for a weather fallback")
+
+# Points-mode counterpart of `_match_fallback_resolution`.
+_match_fallback_resolution_points(source::Type, baseline::Type, layers::NamedTuple, template::NamedTuple, years) =
+    _match_fallback_resolution_points(weather_calendar(source), weather_calendar(baseline), layers, template, years)
+_match_fallback_resolution_points(::T, ::T, layers::NamedTuple, _template, _years) where {T <: Calendar} = layers
+function _match_fallback_resolution_points(::Daily, ::Monthly, layers::NamedTuple, template::NamedTuple, years)
+    ref = first(values(template))
+    return NamedTuple{keys(layers)}(map(l -> _monthly_to_daily_points(l, ref, years), values(layers)))
+end
+_match_fallback_resolution_points(target::Calendar, base::Calendar, ::NamedTuple, _template, _years) =
+    error("No calendar-matching path from $(typeof(base)) to $(typeof(target)) for a weather fallback (points mode)")
+
+# Resample a monthly climatology onto `ref`'s grid, then repeat each of its
+# 12*nyears slices across every real day of that month (leap-aware), reusing
+# `ref`'s own Ti axis. Setup-time only.
+function _monthly_to_daily(layer::AbstractRaster, ref::AbstractRaster, years)
+    resampled = Rasters.resample(layer; to = dims(ref, (X, Y)))
+    data = parent(resampled)
+    ti = dims(ref, Ti)
+    out = similar(data, size(data, 1), size(data, 2), length(ti))
+    years_v = collect(years)
+    d = 0
+    for (yi, y) in enumerate(years_v), m in 1:12
+        @views month_slice = data[:, :, (yi - 1) * 12 + m]
+        for _ in 1:Dates.daysinmonth(y, m)
+            d += 1
+            out[:, :, d] .= month_slice
+        end
+    end
+    return Raster(out, (dims(resampled)[1:2]..., ti); crs = crs(resampled))
+end
+
+# Points-mode `_monthly_to_daily` -- no resample needed, points already sit
+# at their own native-grid location.
+function _monthly_to_daily_points(layer::AbstractRaster, ref::AbstractRaster, years)
+    data = parent(layer)
+    pdim = dims(layer, 1)
+    ti = dims(ref, Ti)
+    out = similar(data, size(data, 1), length(ti))
+    years_v = collect(years)
+    d = 0
+    for (yi, y) in enumerate(years_v), m in 1:12
+        @views month_col = data[:, (yi - 1) * 12 + m]
+        for _ in 1:Dates.daysinmonth(y, m)
+            d += 1
+            out[:, d] .= month_col
+        end
+    end
+    return Raster(out, (pdim, ti))
 end
 
 # Resample a daily layer onto `ref`'s grid, then place each day's value at
