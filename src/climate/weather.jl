@@ -5,7 +5,17 @@ struct Mean <: Aspect end
 struct DiurnalRange <: Aspect end
 struct DailyTotal <: Aspect end
 
-const Qualifier = Union{Nothing, Aspect, Microclimate.TimeOfDay}
+# Local stubs for time-of-day qualifiers. Upstream `TimeOfDay` /
+# `Microclimate.ClockTime` types are on an unmerged branch; the refactor
+# uses them opaquely, so a minimal local declaration matches until those
+# land.
+abstract type TimeOfDay end
+struct ClockTime <: TimeOfDay
+    hour::Float64
+end
+ClockTime(h::Int) = ClockTime(Float64(h))
+
+const Qualifier = Union{Nothing, Aspect, TimeOfDay}
 
 abstract type Sample end
 
@@ -62,12 +72,12 @@ end
 @inline _canonical_name(q::Sample, ::Mean) = Symbol(:mean_, physical_quantity(q))
 @inline _canonical_name(q::Sample, ::DiurnalRange) = Symbol(:diurnal_, physical_quantity(q), :_range)
 @inline _canonical_name(q::Sample, ::DailyTotal) = Symbol(physical_quantity(q), :_daily)
-@inline _canonical_name(q::Sample, t::Microclimate.TimeOfDay) =
+@inline _canonical_name(q::Sample, t::TimeOfDay) =
     _timed_name(physical_quantity(q), t)
 @inline canonical_name(::SoilTemperature{Mean}) = :deep_soil_temperature
 @inline canonical_name(r::Reference) = Symbol(:reference_, canonical_name(r.sample))
 
-Base.@assume_effects :foldable function _timed_name(base::Symbol, t::Microclimate.ClockTime)
+Base.@assume_effects :foldable function _timed_name(base::Symbol, t::ClockTime)
     h = t.hour
     tag = isinteger(h) ? string(Int(h)) : replace(string(h), "." => "_")
     return Symbol(base, :_, tag)
@@ -117,6 +127,7 @@ const SixHourly = SubDaily{4}
 abstract type Loader end
 
 struct YearlyTimeSeries <: Loader end
+struct MonthlyTimeSeries <: Loader end
 struct MonthlyClimatology <: Loader end
 struct MonthlyClimatologyPeriod <: Loader end
 struct MultiBandClimatologyPeriod <: Loader end
@@ -190,14 +201,17 @@ function _load_weather(source::Type, area::Extent, years)
     # NaN propagate visibly if any cell is genuinely masked.
     stack = Rasters.replace_missing(stack, NaN)
     # Every source must deliver exactly the native step count it declares
-    # (calendar days/year × samples/day × years). Catch any loader that
+    # (per-year day count × samples/day, summed across years). Leap-aware so
+    # daily/sub-daily sources yield 366 in leap years. Catch any loader that
     # returns a different Ti rather than mis-slicing it downstream.
-    expected = steps_per_year(weather_calendar(source), native_timestep(source)) * length(years)
+    cal = weather_calendar(source)
+    native = native_timestep(source)
+    expected = length(_days_of_year(cal, years)) * samples_per_day(native)
     n = length(dims(stack, Ti))
     n == expected || error(
         "$(nameof(source)): loaded Ti=$n, but the source declares $expected " *
-        "($(nameof(typeof(weather_calendar(source)))) × " *
-        "$(nameof(typeof(native_timestep(source)))), $(length(years)) years)")
+        "($(nameof(typeof(cal))) × " *
+        "$(nameof(typeof(native))), $(length(years)) years)")
     return stack
 end
 
@@ -213,6 +227,18 @@ function _load_layers(::YearlyTimeSeries, source, fields::Tuple, area::Extent, y
             read(crop(Raster(path; lazy = true); to = area, touches = true))
         end
         cat(per_year...; dims = Ti)
+    end
+    return NamedTuple{fields}(layers)
+end
+function _load_layers(::MonthlyTimeSeries, source, fields::Tuple, area::Extent, years)
+    extras = _extra_getraster_kwargs(source)
+    dates = _monthly_date_sequence(years)
+    layers = map(fields) do name
+        per_month = map(dates) do d
+            path = getraster(source, name; date = d, extras...)
+            read(crop(Raster(path; lazy = true); to = area, touches = true))
+        end
+        cat(per_month...; dims = Ti)
     end
     return NamedTuple{fields}(layers)
 end
@@ -315,8 +341,17 @@ function _daily_date_sequence(years)
     dates = Date[]
     for y in years
         for d in Date(y, 1, 1):Day(1):Date(y, 12, 31)
-            (Dates.month(d) == 2 && Dates.day(d) == 29) && continue
             push!(dates, d)
+        end
+    end
+    return dates
+end
+
+function _monthly_date_sequence(years)
+    dates = Date[]
+    for y in years
+        for m in 1:12
+            push!(dates, Date(y, m, 1))
         end
     end
     return dates
@@ -571,10 +606,10 @@ end
 # Buffer allocation
 # ---------------------------------------------------------------------------
 
-function allocate_weather_buffers(source::Type, target::Timestep, nyears::Int)
+function allocate_weather_buffers(source::Type, target::Timestep, years)
     cal = weather_calendar(source)
     native = native_timestep(source)
-    _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, nyears))
+    _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, years))
 end
 
 @inline _native_quantities(source::Type) =
@@ -640,12 +675,12 @@ function _envelope_forcings(variables::Tuple, b)
 end
 
 function _timed_forcings(variables::Tuple, valuesource)
-    Sample = Tuple{Microclimate.TimeOfDay, Symbol}
+    Sample = Tuple{TimeOfDay, Symbol}
     groups = Pair{Symbol, Vector{Sample}}[]
     for v in variables
         q = quantity(v)
         t = qualifier(q)
-        t isa Microclimate.TimeOfDay || continue
+        t isa TimeOfDay || continue
         key = physical_quantity(q)
         i = findfirst(p -> first(p) === key, groups)
         sample = (t, canonical_name(v))
@@ -1040,8 +1075,12 @@ end
 @inline _minmax_env_type(::Monthly) = MonthlyMinMaxEnvironment
 @inline _minmax_env_type(::Daily) = DailyMinMaxEnvironment
 
-@inline _days_of_year(::Monthly, nyears) = repeat(Microclimate.DEFAULT_DAYS, nyears)
-@inline _days_of_year(::Daily, nyears) = repeat(1:365, nyears)
+@inline _days_of_year(::Monthly, years) = repeat(Microclimate.DEFAULT_DAYS, length(years))
+# `init=Int[]` forces a real `vcat` even for single-year `years` — otherwise
+# `reduce` short-circuits to a bare unconverted UnitRange, which fails
+# SolarRadiation.solar_radiation!'s `Vector{<:Real}` check.
+@inline _days_of_year(::Daily, years) =
+    reduce(vcat, (1:Dates.daysinyear(y) for y in years); init = Int[])
 
 # Convert an old-style integer years range to a full-calendar Date range.
 _years_to_dates(years::AbstractRange{Int}) =
@@ -1052,24 +1091,22 @@ _years_to_dates(years::AbstractRange{Int}) =
 _years_from_dates(d::Date) = year(d):year(d)
 _years_from_dates(r::AbstractRange{Date})  = minimum(year, r):maximum(year, r)
 
-# Day-of-year on the 365-day calendar (Feb 29 is dropped, so March 1 = doy 60
-# whether or not the year is a leap year).
-function _doy_noleap(d::Date)
-    doy = dayofyear(d)
-    isleapyear(year(d)) && d >= Date(year(d), 3, 1) && (doy -= 1)
-    return doy
+# Cumulative day offset at which year `years_v[yi]` begins. Setup-time only,
+# so allocation doesn't matter here.
+function _cumulative_year_days(years_v::Vector{Int}, yi::Int)
+    total = 0
+    @inbounds for i in 1:(yi - 1)
+        total += Dates.daysinyear(years_v[i])
+    end
+    return total
 end
 
-_is_leapday(d::Date) = isleapyear(year(d)) && month(d) == 2 && day(d) == 29
-
-# Normalise user-supplied dates to a sorted Vector{Date}, dropping Feb 29
-# (consistent with the 365-day-per-year convention throughout).
-_normalise_dates(d::Date) = _is_leapday(d) ? Date[] : [d]
+# Normalise user-supplied dates to a sorted Vector{Date}. Feb 29 is kept —
+# leap days are simulated like any other day.
+_normalise_dates(d::Date) = [d]
 function _normalise_dates(r::AbstractRange{Date})
-    v = filter(!_is_leapday, collect(r))
-    isempty(v) && error(
-        "No valid simulation dates remain after dropping Feb 29 " *
-        "(leap days are not yet supported).")
+    v = sort(collect(r))
+    isempty(v) && error("No simulation dates supplied.")
     return v
 end
 
@@ -1095,9 +1132,9 @@ function _ti_range_for_dates(::Daily, native::Timestep, years, dates_vec::Vector
     years_v = collect(years)
     yi_start = findfirst(==(year(start_d)), years_v)
     yi_end   = findfirst(==(year(end_d)),   years_v)
-    ti_start = (yi_start - 1) * 365 * spd + (_doy_noleap(start_d) - 1) * spd + 1
-    ti_end   = (yi_end   - 1) * 365 * spd + _doy_noleap(end_d) * spd
-    return ti_start, ti_end, _doy_noleap.(dates_vec)
+    ti_start = _cumulative_year_days(years_v, yi_start) * spd + (dayofyear(start_d) - 1) * spd + 1
+    ti_end   = _cumulative_year_days(years_v, yi_end)   * spd + dayofyear(end_d) * spd
+    return ti_start, ti_end, dayofyear.(dates_vec)
 end
 
 # One "anchor" Date per solver step — used to carry the year when building

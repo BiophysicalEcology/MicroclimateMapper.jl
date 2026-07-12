@@ -37,7 +37,7 @@ initial conditions, and any per-run data overrides.
     * `Date(2000, 6, 29)` — single day
     * `Date(2000, 6, 1):Day(1):Date(2000, 6, 30)` — one month
     * `Date(2000, 1, 1):Day(1):Date(2000, 12, 31)` — full year
-  Feb 29 is dropped (365-day calendar). Cross-year ranges are supported.
+  Feb 29 is simulated like any other calendar day. Cross-year ranges are supported.
 - `soil_profile::SoilProfile` — per-depth `bulk_density` and
   `mineral_density`. Currently uniform across points (a per-point
   `soil_profile_source` is a planned extension).

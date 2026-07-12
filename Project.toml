@@ -7,6 +7,7 @@ authors = ["Michael Kearney and Rafael Schouten"]
 ArchGDAL = "c9ce4bd3-c3d5-55b8-8973-c0e20141b8c3"
 CommonSolve = "38540f10-b2f7-11e9-35d8-d573e4eb0ff2"
 ConstructionBase = "187b0558-2788-49d3-abe0-74a17ed4e7c9"
+DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Downloads = "f43a241f-c20a-4ad4-852c-f6b1247861c6"
 FillArrays = "1a297f60-69ca-5386-bcde-b61e274b549b"
@@ -20,6 +21,7 @@ JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 Microclimate = "fa5d2a79-de00-40ba-a9f4-ff140fbe07ba"
 ModelParameters = "4744a3fa-6c31-4707-899e-a3298e4618ad"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+PointDataSources = "8cbab062-ff6a-44c2-92ab-f364c212cc46"
 RasterDataSources = "3cb90ccd-e1b6-4867-9617-4276c8b2ca36"
 Rasters = "a3a2b9e3-a471-40c9-b274-f788e487c689"
 Setfield = "efcf1570-3423-57d1-acb7-fd33fddbac46"
@@ -35,9 +37,10 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 
 [sources]
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
-Geomorphometry = {path = "/home/raf/.julia/dev/Geomorphometry"}
-Microclimate = {path = "/home/raf/.julia/dev/Microclimate"}
-RasterDataSources = {rev = "master", url = "https://github.com/EcoJulia/RasterDataSources.jl"}
+Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
+PointDataSources = {rev = "main", url = "https://github.com/BiophysicalEcology/PointDataSources.jl"}
+RasterDataSources = {rev = "better_ncep_crucl2_gridmet_elev", url = "https://github.com/mrke/RasterDataSources.jl"}
+Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
 
 [extensions]
@@ -50,6 +53,7 @@ CSV = "0.10"
 CommonSolve = "0.2"
 ConstructionBase = "1.6"
 DataFrames = "1"
+DataInterpolations = "9.0.0"
 Dates = "1.11.0"
 Downloads = "1.7.0"
 FillArrays = "1"
@@ -57,13 +61,13 @@ Flatten = "0.4.3"
 GLMakie = "0.13.10"
 GeoFormatTypes = "0.4"
 GeoInterface = "1"
-Geomorphometry = "0.7"
+Geomorphometry = "0.7.4"
 JSON3 = "1"
 Makie = "0.21, 0.22, 0.23, 0.24"
 Microclimate = "0.1.0"
 ModelParameters = "0.4"
 NCDatasets = "0.14"
-RasterDataSources = "0.7.2, 0.8"
+RasterDataSources = "0.8"
 Rasters = "0.15"
 SafeTestsets = "0.1"
 Setfield = "1"

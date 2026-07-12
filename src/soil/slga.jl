@@ -1,0 +1,19 @@
+# SLGA -- same 6 depth bins as SoilGrids, already plain physical units.
+# No point-query API in PointDataSources.jl for this source.
+
+texture_variables(::Type{SLGA}) = (
+    TextureVariable(:bulk_density, :bdod, u"Mg/m^3"),  # already g/cm^3 == Mg/m^3
+    TextureVariable(:clay, :clay),
+    TextureVariable(:silt, :silt),
+    TextureVariable(:sand, :sand),
+)
+
+function _load_soil_texture_native(::Type{SLGA}, area::Extent; component = "EV")
+    vars = texture_variables(SLGA)
+    depth_bins = collect(depths(SLGA))  # getraster's depth::AbstractArray dispatch needs a Vector, not a Tuple
+    values = map(vars) do var
+        paths = getraster(SLGA, native_field(var); depth = depth_bins, component)
+        _texture_values_from_paths(paths, area, var)
+    end
+    return NamedTuple{map(canonical_name, vars)}(values)
+end

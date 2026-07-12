@@ -19,6 +19,7 @@ using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation
 using GeoFormatTypes
 using GeoInterface
 using RasterDataSources
+using PointDataSources
 using NCDatasets       # triggers Rasters NCDatasets extension for NetCDF support
 using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 # ZarrDatasets activates Rasters' Zarr extension for ARCO-ERA5 — currently
@@ -38,6 +39,7 @@ using Geomorphometry: Horn
 using StaticArrays: SVector
 using FillArrays: Fill
 using ConstructionBase: setproperties
+using DataInterpolations: CubicSpline, ExtrapolationType
 
 export
     # Lapse rate types
@@ -62,6 +64,12 @@ export
     canonical_unit,
     strip_to_canonical,
     terrain,
+    # Soil texture -> hydraulic profile
+    build_soil_profile,
+    PedotransferModel,
+    CosbyUnivariate,
+    CosbyMultivariate,
+    Campbell1985,
     # Solar output
     SolarOutputLayer,
     SOLAR_BROADBAND,
@@ -79,12 +87,17 @@ include("atmosphere/aerosol.jl")
 include("terrain/terrain_utils.jl")
 include("terrain/srtm.jl")
 include("terrain/copernicus_dem.jl")
+include("soil/pedotransfer.jl")
+include("soil/soilgrids.jl")
+include("soil/slga.jl")
+include("soil/soil_profile_builder.jl")
 include("mesoclimate/lapse_rate.jl")
 include("mesoclimate/cloud.jl")
 include("landcover/landcover.jl")
 include("landcover/earthenv.jl")
 include("landcover/modis.jl")
 include("climate/weather.jl")
+include("climate/pointquery.jl")
 include("climate/terraclimate.jl")
 include("climate/chelsa.jl")
 include("climate/worldclim.jl")
@@ -93,6 +106,8 @@ include("climate/ncep.jl")
 include("climate/awap.jl")
 include("climate/era5.jl")
 include("climate/gridmet.jl")
+include("climate/silo.jl")
+include("climate/barra.jl")
 include("soil/cpcsoil.jl")
 include("common.jl")
 include("solar/solar_output.jl")

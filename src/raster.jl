@@ -31,7 +31,7 @@ per-run data overrides.
     * `Date(2000, 6, 29)` — single day
     * `Date(2000, 6, 1):Day(1):Date(2000, 6, 30)` — one month
     * `Date(2000, 1, 1):Day(1):Date(2000, 12, 31)` — full year
-  Feb 29 is dropped (365-day calendar). Cross-year ranges are supported.
+  Feb 29 is simulated like any other calendar day. Cross-year ranges are supported.
 - `template` — spatial grid the run executes on. Required; no fallback.
     * `Type{<:RasterDataSource}` (e.g. `SRTM`) — load that dataset over
       `area` and use it as the grid; weather is resampled onto it.
@@ -210,7 +210,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
     soil_moisture_available = model.solar_only ? false :
         _has_canonical_input(:soil_moisture, weather_source, data)
 
-    # Normalise the user-supplied dates: drop Feb 29, get a sorted Vector{Date}.
+    # Normalise the user-supplied dates to a sorted Vector{Date}.
     dates_vec = _normalise_dates(dates)
     years = _years_from_dates(dates)
     calendar = weather_calendar(weather_source)

@@ -400,17 +400,19 @@ function _build_inputs_and_pool(;
     @info "model: threads:         $(Threads.nthreads())"
 
     calendar = weather_calendar(weather_source)
-    # `solar_ndays` is the number of distinct solar-geometry days per year —
-    # 365 for the Daily calendar, 12 for Monthly. This drives scratch.solar.out
-    # sizing (one entry per day × 24 hours), independent of timestep.
-    solar_ndays = _solar_ndays_per_year(calendar) * length(years)
+    # `solar_ndays` is the total number of distinct solar-geometry days across
+    # `years` — one per real calendar day for daily/sub-daily sources (366 in
+    # a leap year), 12 per year for monthly. Drives scratch.solar.out sizing,
+    # and must match `allocate_weather_buffers`' `days_of_year` length exactly
+    # (`_days_of_year` is the single source of truth for both).
+    solar_ndays = length(_days_of_year(calendar, years))
     time_mode = _time_mode(calendar)
     nsteps = length(cloud_constants.hours) * solar_ndays
     nmax = cloud_constants.solar_model.wavelength_count
     # `days` is the doy vector: one per unique day (Daily) or one per selected
     # month (Monthly). Solar radiation is computed for each entry × 24 hours.
     allocate_scratch() = (;
-        weather = allocate_weather_buffers(weather_source, target_timestep, length(years)),
+        weather = allocate_weather_buffers(weather_source, target_timestep, years),
         solar = (;
             out = allocate_output_arrays(nsteps, solar_ndays, nmax),
             buffers = allocate_buffers(nmax, cloud_constants.solar_model.diffuse_model),

@@ -3,7 +3,9 @@ using Dates
 using MicroclimateMapper
 using MicroclimateMapper: _make_points_dim, _points_extent,
     _to_points, _to_points_constant, _to_points_with_time,
-    _stack_to_points
+    _stack_to_points, _extract_lazy_at_points,
+    _daily_to_hourly_midnight_points, _static_to_ti_points
+using NCDatasets
 using Microclimate: example_microclimate_problem, example_soil_profile
 using RasterDataSources
 using Rasters
@@ -91,6 +93,76 @@ end
     @test keys(out) == (:a, :b)
     @test dims(out.a) == (pdim,)
     @test dims(out.b) == (pdim,)
+end
+
+@testset "_extract_lazy_at_points (disk-backed, no network)" begin
+    pdim = _make_points_dim(POINTS)
+    xs = 146.00:0.01:146.10
+    ys = -36.00:0.01:-35.90
+    nt = 4
+    times = DateTime(2000, 1, 1):Hour(1):(DateTime(2000, 1, 1) + Hour(nt - 1))
+    data = [x + 100 * y + 0.01 * t for x in xs, y in ys, t in 1:nt]
+    rast = Raster(data, (X(xs), Y(ys), Ti(times)); name = :test)
+
+    mktempdir() do dir
+        fn = joinpath(dir, "test.nc")
+        write(fn, rast; force = true)
+        lazy_r = Raster(fn; lazy = true)
+
+        out = _extract_lazy_at_points(lazy_r, pdim)
+        expected = _to_points_with_time(rast, pdim)
+        @test size(out) == size(expected)
+        @test hasdim(out, Ti)
+        @test all(collect(out) .≈ collect(expected))
+    end
+end
+
+@testset "_extract_lazy_at_points static (disk-backed)" begin
+    pdim = _make_points_dim(POINTS)
+    xs = 146.00:0.01:146.10
+    ys = -36.00:0.01:-35.90
+    data = [x + 100 * y for x in xs, y in ys]
+    rast = Raster(data, (X(xs), Y(ys)); name = :elev)
+
+    mktempdir() do dir
+        fn = joinpath(dir, "static.nc")
+        write(fn, rast; force = true)
+        lazy_r = Raster(fn; lazy = true)
+
+        out = _extract_lazy_at_points(lazy_r, pdim)
+        expected = _to_points_constant(rast, pdim)
+        @test size(out) == size(expected)
+        @test all(collect(out) .≈ collect(expected))
+    end
+end
+
+@testset "_daily_to_hourly_midnight_points" begin
+    pdim = _make_points_dim(POINTS)
+    ndays = 3
+    daily = Raster([100.0i + d for i in 1:length(pdim), d in 1:ndays], (pdim, Ti(1:ndays)))
+    ref = Raster(zeros(length(pdim), ndays * 24), (pdim, Ti(1:(ndays * 24))))
+
+    out = _daily_to_hourly_midnight_points(daily, ref)
+    @test size(out) == (length(pdim), ndays * 24)
+    for i in 1:length(pdim), d in 1:ndays
+        @test out[i, (d - 1) * 24 + 1] == daily[i, d]
+        for h in 2:24
+            @test out[i, (d - 1) * 24 + h] == 0
+        end
+    end
+end
+
+@testset "_static_to_ti_points" begin
+    pdim = _make_points_dim(POINTS)
+    nt = 5
+    value = Raster([10.0, 20.0, 30.0], (pdim,))
+    ref = Raster(zeros(length(pdim), nt), (pdim, Ti(1:nt)))
+
+    out = _static_to_ti_points(value, ref)
+    @test size(out) == (length(pdim), nt)
+    for i in 1:length(pdim), t in 1:nt
+        @test out[i, t] == value[i]
+    end
 end
 
 @testset "MicroVectorProblem construction" begin
