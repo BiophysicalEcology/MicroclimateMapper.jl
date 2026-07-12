@@ -39,6 +39,7 @@ const _SAMPLE_QUANTITIES = (
     (:VapourPressureDeficit, :vapour_pressure_deficit, u"kPa"),
     (:SoilMoisture, :soil_moisture, nothing),
     (:ActualVapourPressure, :actual_vapour_pressure, u"kPa"),
+    (:SeaLevelPressure, :sea_level_pressure, u"Pa"),
     (:SoilTemperature, :soil_temperature, u"K"),
     (:ZenithAngle, :zenith_angle, u"°"),
     (:Elevation, :elevation, u"m"),
@@ -174,14 +175,14 @@ end
         (first(candidates), _names_absent(own, Base.tail(candidates))...)
 @inline _extra_getraster_kwargs(::Type) = (;)
 
-# A source's grid elevation is just its declared `Elevation()` quantity, read at
-# the first timestep (it is static across Ti). Sources that don't declare it get
-# `nothing` and fall back to the site DEM elevation.
+# A source's grid elevation is just its declared `Elevation()` quantity —
+# static, no Ti axis. Sources that don't declare it get `nothing` and fall
+# back to the site DEM elevation.
 @inline weather_grid_elevation(source::Type, weather, I) =
     _grid_elevation(_maybe_variable(variables(source), :elevation), weather, I)
 @inline _grid_elevation(::Nothing, _weather, _I) = nothing
 @inline _grid_elevation(var::Variable, weather, I) =
-    u"m"(var.transform(weather[:elevation][I..., Ti(1)]) * var.unit)
+    u"m"(var.transform(weather[:elevation][I...]) * var.unit)
 
 function _aggregate_ti_to_daily(layer::AbstractRaster, factor::Int)
     return Rasters.aggregate(mean, layer, (Ti(factor),))
@@ -200,20 +201,22 @@ function _load_weather(source::Type, area::Extent, years)
     # `replace_missing(..., NaN)` strips the Missing union and lets
     # NaN propagate visibly if any cell is genuinely masked.
     stack = Rasters.replace_missing(stack, NaN)
-    # Every source must deliver exactly the native step count it declares
-    # (per-year day count × samples/day, summed across years). Leap-aware so
-    # daily/sub-daily sources yield 366 in leap years. Catch any loader that
-    # returns a different Ti rather than mis-slicing it downstream.
+    # Ti-count check runs on the first Ti-varying layer only — static ones
+    # (Elevation() declarations) have no Ti axis and are excluded.
     cal = weather_calendar(source)
     native = native_timestep(source)
     expected = length(_days_of_year(cal, years)) * samples_per_day(native)
-    n = length(dims(stack, Ti))
+    ref = _first_ti_layer(stack)
+    n = length(dims(ref, Ti))
     n == expected || error(
         "$(nameof(source)): loaded Ti=$n, but the source declares $expected " *
         "($(nameof(typeof(cal))) × " *
         "$(nameof(typeof(native))), $(length(years)) years)")
     return stack
 end
+
+@inline _first_ti_layer(stack::RasterStack) =
+    first(l for l in values(stack) if hasdim(l, Ti))
 
 # ---------------------------------------------------------------------------
 # Per-loader file-reading
@@ -357,6 +360,30 @@ function _monthly_date_sequence(years)
     return dates
 end
 
+# Resample a daily layer onto `ref`'s grid, then place each day's value at
+# its first hour (midnight), zero elsewhere — a single daily event on `ref`'s
+# hourly Ti axis. Setup-time only.
+function _daily_to_hourly_midnight(layer::AbstractRaster, ref::AbstractRaster)
+    resampled = Rasters.resample(layer; to = dims(ref, (X, Y)))
+    data = parent(resampled)
+    ti = dims(ref, Ti)
+    out = zeros(eltype(data), size(data, 1), size(data, 2), length(ti))
+    for d in 1:size(data, 3)
+        out[:, :, (d - 1) * 24 + 1] .= @view data[:, :, d]
+    end
+    return Raster(out, (dims(resampled)[1:2]..., ti); crs = crs(resampled))
+end
+
+# Resample a static layer onto `ref`'s grid and tile across `ref`'s Ti axis
+# (CRUCL2 `:elv`, GRIDMET `:elev` convention). Setup-time only.
+function _static_to_ti(layer::AbstractRaster, ref::AbstractRaster)
+    resampled = Rasters.resample(layer; to = dims(ref, (X, Y)))
+    data = parent(resampled)
+    ti = dims(ref, Ti)
+    tiled = repeat(reshape(data, size(data)..., 1); outer = (1, 1, length(ti)))
+    return Raster(tiled, (dims(resampled)[1:2]..., ti); crs = crs(resampled))
+end
+
 
 function _build_monthly_climatology(path_for, area::Extent, nyears::Int)
     monthly = map(1:12) do m
@@ -383,9 +410,53 @@ end
 
 function _load_canonical(source, names::Tuple, area::Extent, years)
     vars = _select_variables(variables(source), names)
-    native_stack = _load_layers(loader(source), source,
-                                _unique_native_fields(vars), area, years)
-    return _canonical_keyed(vars, native_stack)
+    # `Elevation()` declarations are static — one file, no Ti axis. Split
+    # them off and load via the one-shot path; the rest go through the
+    # source's declared Ti-varying loader.
+    ti_vars, static_vars = _split_static(vars)
+    ti_stack     = _load_layers(loader(source), source,
+                                _unique_native_fields(ti_vars), area, years)
+    static_stack = _load_static(source, _unique_native_fields(static_vars), area)
+    return _canonical_keyed(vars, merge(ti_stack, static_stack))
+end
+
+# Compile-time partition of a variables tuple into (Ti-varying, static)
+# using method dispatch on the Variable's quantity type parameter.
+@inline _split_static(vars::Tuple) = _split_static((), (), vars)
+@inline _split_static(ti::Tuple, st::Tuple, ::Tuple{}) = (ti, st)
+@inline _split_static(ti::Tuple, st::Tuple, vars::Tuple) =
+    _split_static_step(ti, st, first(vars), Base.tail(vars))
+@inline _split_static_step(ti::Tuple, st::Tuple,
+        v::Variable{<:Any, <:Any, <:Elevation}, rest::Tuple) =
+    _split_static(ti, (st..., v), rest)
+@inline _split_static_step(ti::Tuple, st::Tuple, v::Variable, rest::Tuple) =
+    _split_static((ti..., v), st, rest)
+
+# One-shot read for static (no-Ti) fields. Dispatched on the source's
+# loader so per-file-organization access patterns are respected: the
+# default is `getraster(source, name)` (BARRA-style, one file per field);
+# SingleFileBands reads bands from the source's single bundled file.
+@inline _load_static(source, fields::Tuple, area::Extent) =
+    _load_static(loader(source), source, fields, area)
+
+_load_static(_loader, _source, ::Tuple{}, _area) = NamedTuple()
+function _load_static(::Loader, source, fields::Tuple, area::Extent)
+    layers = map(fields) do name
+        path = getraster(source, name)
+        read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+    end
+    return NamedTuple{fields}(layers)
+end
+function _load_static(::SingleFileBands, source, fields::Tuple, area::Extent)
+    load_area, restore_dims = _native_lon_crop(longitude_convention(source), area)
+    path = getraster(source; _extra_getraster_kwargs(source)...)
+    raw = read(crop(RasterStack(path; name = fields, lazy = true);
+                    to = load_area, touches = true))
+    layers = map(fields) do name
+        lyr = raw[name]
+        Raster(parent(lyr), restore_dims(dims(lyr)[1:2]); crs = crs(lyr))
+    end
+    return NamedTuple{fields}(layers)
 end
 
 @inline _select_variables(vars::Tuple, names::Tuple) =
@@ -464,6 +535,7 @@ const _ENVELOPE_PHYSICS = (
 const _NATIVE_PHYSICS = (
    WindSpeed(),
    ActualVapourPressure(),
+   Pressure(),
 )
 
 const _OUTPUT_PHYSICS = (
@@ -612,8 +684,57 @@ function allocate_weather_buffers(source::Type, target::Timestep, years)
     _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, years))
 end
 
-@inline _native_quantities(source::Type) =
-    (map(quantity, variables(source))..., WindSpeed(), ActualVapourPressure())
+# Which env timeseries a Sample's data feeds — `EnvHourly` sends the read
+# through `buffers.native.<name>`, later resampled to output and sourced
+# by `env_hourly`; `EnvDaily` writes straight into `buffers.<name>`, the
+# slot `env_daily` reads. Dispatched on the Sample type so the partition
+# below resolves through method dispatch, not a runtime branch.
+abstract type EnvSlot end
+struct EnvHourly <: EnvSlot end
+struct EnvDaily  <: EnvSlot end
+
+@inline env_slot(::Sample)                = EnvHourly()
+@inline env_slot(::Rainfall{DailyTotal})  = EnvDaily()
+@inline env_slot(::SoilTemperature{Mean}) = EnvDaily()
+@inline env_slot(::SoilMoisture)          = EnvDaily()
+@inline env_slot(v::Variable)             = env_slot(quantity(v))
+
+# Assembly-time parent buffer for a slot.
+@inline slot_target(buffers, ::EnvHourly) = buffers.native
+@inline slot_target(buffers, ::EnvDaily)  = buffers
+
+# Compile-time partition — keep vs skip decided by method dispatch on the
+# (var_slot, wanted_slot) type pair, no boolean comparison.
+@inline vars_for(vars::Tuple, slot::EnvSlot) = _vars_for((), vars, slot)
+@inline _vars_for(acc::Tuple, ::Tuple{}, ::EnvSlot) = acc
+@inline function _vars_for(acc::Tuple, vars::Tuple, slot::EnvSlot)
+    v = first(vars)
+    return _vars_for_step(acc, v, env_slot(v), slot, Base.tail(vars))
+end
+@inline _vars_for_step(acc::Tuple, v, ::S, slot::S, rest::Tuple) where {S<:EnvSlot} =
+    _vars_for((acc..., v), rest, slot)
+@inline _vars_for_step(acc::Tuple, _v, ::EnvSlot, slot::EnvSlot, rest::Tuple) =
+    _vars_for(acc, rest, slot)
+
+# Native quantities only — `EnvDaily` ones live in `buffers.<name>` and
+# come from `_SERIES_DAILY`, so they must not appear in `buffers.native`.
+@inline _native_quantities(source::Type) = _merge_unique(
+    map(quantity, vars_for(variables(source), EnvHourly())),
+    (WindSpeed(), ActualVapourPressure(), Pressure()),
+)
+
+# Append each quantity in `extras` to `base` only if `base` doesn't already
+# carry a quantity with the same canonical name. Keeps buffer allocation
+# collision-free when a source natively declares one of the always-derivable
+# quantities (e.g. BARRA's `WindSpeed`).
+@inline _merge_unique(base::Tuple, ::Tuple{}) = base
+@inline function _merge_unique(base::Tuple, extras::Tuple)
+    first_extra = first(extras)
+    name = canonical_name(first_extra)
+    already = any(x -> canonical_name(x) === name, base)
+    new_base = already ? base : (base..., first_extra)
+    return _merge_unique(new_base, Base.tail(extras))
+end
 
 @inline _zeros(unit, n) = zeros(typeof(0.0 * unit), n)
 @inline _zeros(::Nothing, n) = zeros(Float64, n)
@@ -793,7 +914,14 @@ end
 end
 function _assemble!(native_step::SubDaily, target_step::SubDaily, buffers, weather, source,
                     ctx, variables, overrides, I)
-    _read_native!(buffers.native, weather, variables, I)
+    # Per-slot read: `EnvHourly` vars land in `buffers.native.<name>` (later
+    # resampled to output); `EnvDaily` declarations (e.g. BARRA's
+    # `Rainfall(DailyTotal())` for `:pr`) go straight into `buffers.<name>`,
+    # the slot `env_daily` sources.
+    _read_native!(slot_target(buffers, EnvHourly()), weather,
+                  vars_for(variables, EnvHourly()), I)
+    _read_native!(slot_target(buffers, EnvDaily()),  weather,
+                  vars_for(variables, EnvDaily()),  I)
     _run_physics!(buffers.native, ctx, _NATIVE_PHYSICS, variables, overrides)
     # The clear-sky solar field is an input the shortwave disaggregation reads,
     # not a derived quantity — compute it before resampling.
@@ -944,6 +1072,28 @@ function derive!(::Reference{RelativeHumidity{Minimum}}, buffers, ctx)
 end
 function derive!(::WindSpeed, buffers, ctx)
     _wind_speed!(buffers.wind_speed, buffers.eastward_wind, buffers.northward_wind)
+    return nothing
+end
+# Pressure at the simulated site. When the source declares mean sea level
+# pressure (e.g. BARRA's `:psl`), apply the barometric formula at the DEM
+# site elevation using each hour's MSLP as the reference — BARRA's grid
+# elevation differs from the DEM-derived site one, so the standard-atmosphere
+# reference is not appropriate here. When no MSLP is present, fall back to
+# the standard atmosphere at site elevation (matches what
+# `_finalize_environment_hourly` did inline for MinMax sources).
+function derive!(::Pressure, buffers, ctx)
+    elevation = ctx.site.elevation
+    if hasproperty(buffers, :sea_level_pressure)
+        @inbounds for k in eachindex(buffers.pressure)
+            buffers.pressure[k] =
+                atmospheric_pressure(elevation; reference_pressure = buffers.sea_level_pressure[k])
+        end
+    else
+        p = atmospheric_pressure(elevation)
+        @inbounds for k in eachindex(buffers.pressure)
+            buffers.pressure[k] = p
+        end
+    end
     return nothing
 end
 function derive!(::Reference{WindSpeed{Maximum}}, buffers, ctx)

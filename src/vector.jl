@@ -135,6 +135,44 @@ function _stack_to_points(stack::RasterStack, points_dim)
     return RasterStack(NamedTuple{names}(extracted))
 end
 
+# Points-mode helpers shared with the (deferred) points-native fast path.
+# Kept separate from `_to_points_with_time` because they operate on a
+# lazy/disk-backed Raster and on already-points-shaped rasters respectively.
+
+function _extract_lazy_at_points(lazy_r::Raster, points_dim)
+    coords = lookup(points_dim)
+    open(lazy_r) do orast
+        if ndims(orast) >= 3
+            other = first(otherdims(orast, (X, Y)))
+            cols = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(permutedims(reduce(hcat, map(parent, cols))), (points_dim, other))
+        else
+            vals = [orast[X(Near(x)), Y(Near(y))] for (x, y) in coords]
+            Raster(collect(vals), (points_dim,))
+        end
+    end
+end
+
+# Place a per-point daily total as a single event at each day's first hour
+# (midnight); other hours stay zero. Used by BARRA-style sources whose
+# rainfall arrives daily while the rest of the stack is hourly.
+function _daily_to_hourly_midnight_points(daily::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(daily, 1)
+    out = zeros(eltype(daily), length(pdim), length(ti))
+    for d in axes(daily, 2)
+        out[:, (d - 1) * 24 + 1] .= @view daily[:, d]
+    end
+    return Raster(out, (pdim, ti))
+end
+
+# Broadcast a per-point static value across the Ti axis of `ref`.
+function _static_to_ti_points(value::Raster, ref::Raster)
+    ti = dims(ref, Ti)
+    pdim = dims(value, 1)
+    return Raster(repeat(parent(value), 1, length(ti)), (pdim, ti))
+end
+
 # Resolve a surface property (albedo / roughness) into a 1-D points-mode
 # Raster. Same input forms as grid mode — the native-resolution result is
 # computed via `_resolve_surface_native` then `_to_points`-extracted.

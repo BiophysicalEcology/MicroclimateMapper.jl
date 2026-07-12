@@ -30,7 +30,7 @@ using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
 using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
     ForwardOrdered, ReverseOrdered, span, order, sampling
-using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims
+using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims, otherdims
 using Rasters.DimensionalData: unrolled_map, basetypeof
 using Rasters.Extents
 using Rasters.Extents: Extent

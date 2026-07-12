@@ -17,14 +17,11 @@ function variables(::Type{<:SILO})
     (
         Variable(Temperature(Maximum()), :max_temp, u"°C"),
         Variable(Temperature(Minimum()), :min_temp, u"°C"),
-        # `:daily_rain` is mm/day depth; numerically equal to kg/m².
+        # `:daily_rain` is mm depth; numerically equal to kg/m².
         Variable(Rainfall(), :daily_rain, u"kg/m^2"),
-        Variable(Reference(RelativeHumidity(Minimum())), :rh_tmax, 1, _silo_percent_to_fraction),
-        Variable(Reference(RelativeHumidity(Maximum())), :rh_tmin, 1, _silo_percent_to_fraction),
-        # Daily total solar exposure (MJ/(m²·day)); Unitful converts to
-        # W/m² on assignment to the canonical buffer.
+        Variable(Reference(RelativeHumidity(Minimum())), :rh_tmax, 1, percent_to_fraction),
+        Variable(Reference(RelativeHumidity(Maximum())), :rh_tmin, 1, percent_to_fraction),
+        # Daily total solar exposure (MJ/(m²·day))
         Variable(GlobalRadiation(), :radiation, u"MJ/m^2/d"),
     )
 end
-
-_silo_percent_to_fraction(raw) = raw / 100.0
