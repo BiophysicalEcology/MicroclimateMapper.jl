@@ -834,21 +834,28 @@ function _vapour_pressure_from_specific_humidity!(out, q, p)
     return out
 end
 
-function _deep_soil!(out, series, out_per_year)
-    nyears = max(1, length(out) ÷ out_per_year)
-    out_per = length(out) ÷ nyears
-    series_per = length(series) ÷ nyears
-    @inbounds for y in 1:nyears
+# Per-year mean of `series`, broadcast across each year's `out` entries.
+# Year boundaries come from `days_of_year` (wherever it drops instead of
+# increasing), so leap years and monthly-representative-day sequences are
+# both handled correctly -- unlike splitting by a fixed `length ÷ nyears`,
+# which silently drops the remainder whenever years aren't equal length.
+function _deep_soil!(out, series, days_of_year)
+    n = length(out)
+    d = 1
+    @inbounds while d <= n
+        d_end = d
+        while d_end < n && days_of_year[d_end + 1] > days_of_year[d_end]
+            d_end += 1
+        end
         s = zero(eltype(series))
-        sb = (y - 1) * series_per
-        for k in 1:series_per
-            s += series[sb + k]
+        for k in d:d_end
+            s += series[k]
         end
-        m = s / series_per
-        ob = (y - 1) * out_per
-        for d in 1:out_per
-            out[ob + d] = m
+        m = s / (d_end - d + 1)
+        for k in d:d_end
+            out[k] = m
         end
+        d = d_end + 1
     end
     return out
 end
@@ -1335,7 +1342,7 @@ function derive!(::CloudCover{Maximum}, buffers, ctx)
     return nothing
 end
 function derive!(::SoilTemperature{Mean}, buffers, ctx)
-    _deep_soil!(buffers.deep_soil_temperature, _air_temperature(buffers), ctx.steps_per_year)
+    _deep_soil!(buffers.deep_soil_temperature, _air_temperature(buffers), ctx.days_of_year)
     return nothing
 end
 function derive!(::Rainfall{DailyTotal}, buffers, ctx)
