@@ -174,6 +174,7 @@ end
         _names_absent(own, Base.tail(candidates)) :
         (first(candidates), _names_absent(own, Base.tail(candidates))...)
 @inline _extra_getraster_kwargs(::Type) = (;)
+@inline _extra_getpoint_kwargs(::Type) = (;)
 
 @inline supports_points_loading(::Type) = true
 
@@ -466,9 +467,17 @@ _match_fallback_resolution_points(target::Calendar, base::Calendar, ::NamedTuple
 
 # Resample a monthly climatology onto `ref`'s grid, then repeat each of its
 # 12*nyears slices across every real day of that month (leap-aware), reusing
-# `ref`'s own Ti axis. Setup-time only.
+# `ref`'s own Ti axis. Setup-time only. `Rasters.resample` rejects a
+# degenerate 1x1 target grid (e.g. a `PointQuery`-sourced `ref`), so that
+# case selects the nearest source cell directly instead.
 function _monthly_to_daily(layer::AbstractRaster, ref::AbstractRaster, years)
-    resampled = Rasters.resample(layer; to = dims(ref, (X, Y)))
+    x_lk, y_lk = dims(ref, X), dims(ref, Y)
+    resampled = if length(x_lk) == 1 && length(y_lk) == 1
+        cell = layer[X(Near(only(x_lk))), Y(Near(only(y_lk)))]
+        Raster(reshape(parent(cell), 1, 1, length(cell)), (x_lk, y_lk, dims(layer, Ti)); crs = crs(layer))
+    else
+        Rasters.resample(layer; to = (x_lk, y_lk))
+    end
     data = parent(resampled)
     ti = dims(ref, Ti)
     out = similar(data, size(data, 1), size(data, 2), length(ti))
@@ -950,9 +959,18 @@ const _ENVELOPE_BUFFERS = (
     Rainfall(), SoilTemperature(Mean()), SoilMoisture(),
 )
 
+const _MINMAX_FORCING_INPUTS = (
+    :reference_temperature_min, :reference_temperature_max,
+    :reference_wind_speed_min, :reference_wind_speed_max,
+    :reference_humidity_min, :reference_humidity_max,
+    :cloud_cover_min, :cloud_cover_max,
+)
+
 function _envelope_forcings(variables::Tuple, b)
     valuesource = name -> getproperty(b, name)
-    standard = Microclimate.bind_forcings(Microclimate.MINMAX_FORCING_MODEL, valuesource)
+    # minmax_forcings derives each _mean from its _min/_max; the field names
+    # it takes match this package's own canonical naming exactly.
+    standard = Microclimate.minmax_forcings(; NamedTuple{_MINMAX_FORCING_INPUTS}(b)...)
     timed = _timed_forcings(variables, valuesource)
     isempty(timed) && return standard
     base = (; standard.reference_temperature, standard.reference_wind_speed, standard.cloud_cover)
