@@ -897,6 +897,18 @@ end
 @inline _vars_for_step(acc::Tuple, _v, ::EnvSlot, slot::EnvSlot, rest::Tuple) =
     _vars_for(acc, rest, slot)
 
+# All vars except EnvStatic ones (e.g. Elevation), for the MinMax native path.
+@inline non_static_vars(vars::Tuple) = _non_static_vars((), vars)
+@inline _non_static_vars(acc::Tuple, ::Tuple{}) = acc
+@inline function _non_static_vars(acc::Tuple, vars::Tuple)
+    v = first(vars)
+    return _non_static_vars_step(acc, v, env_slot(v), Base.tail(vars))
+end
+@inline _non_static_vars_step(acc::Tuple, _v, ::EnvStatic, rest::Tuple) =
+    _non_static_vars(acc, rest)
+@inline _non_static_vars_step(acc::Tuple, v, ::EnvSlot, rest::Tuple) =
+    _non_static_vars((acc..., v), rest)
+
 # Native quantities only — `EnvDaily` ones live in `buffers.<name>` and
 # come from `_SERIES_DAILY`, so they must not appear in `buffers.native`.
 @inline _native_quantities(source::Type) = _merge_unique(
@@ -1098,7 +1110,7 @@ end
 
 @inline function _assemble!(::MinMax, ::Timestep, buffers, weather, source, ctx,
                             variables, overrides, I)
-    _read_native!(buffers, weather, variables, I)
+    _read_native!(buffers, weather, non_static_vars(variables), I)
     _run_physics!(buffers, ctx, _ENVELOPE_PHYSICS, variables, overrides)
     return nothing
 end
