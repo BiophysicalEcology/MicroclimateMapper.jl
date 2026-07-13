@@ -32,7 +32,7 @@ function _load_layers_at_points(::PointQuery, source, fields::Tuple, points_dim,
     date_range = (Date(first(years), 1, 1), Date(last(years), 12, 31))
     extras = _extra_getpoint_kwargs(source)
     layers = map(fields) do name
-        @info "  querying $source $name via OPeNDAP ($(length(coords)) point(s))..."
+        @info "  querying $source $name ($(length(coords)) point(s))..."
         series = [PointDataSources.getpoint(source, name; lon, lat, date=date_range, extras...)
                   for (lon, lat) in coords]
         times = series[1].times
