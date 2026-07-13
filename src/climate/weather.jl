@@ -615,6 +615,9 @@ end
     _load_static(loader(source), source, fields, area)
 
 _load_static(_loader, _source, ::Tuple{}, _area) = NamedTuple()
+# Disambiguates against each loader-specific method's ::Tuple{} match below.
+_load_static(::Loader, _source, ::Tuple{}, _area::Extent) = NamedTuple()
+_load_static(::SingleFileBands, _source, ::Tuple{}, _area::Extent) = NamedTuple()
 function _load_static(::Loader, source, fields::Tuple, area::Extent)
     layers = map(fields) do name
         @info "  loading $source $name (static)..."
