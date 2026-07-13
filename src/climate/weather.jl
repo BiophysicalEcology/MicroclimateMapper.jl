@@ -1206,18 +1206,15 @@ function derive!(r::Reference{<:Temperature}, buffers, ctx)
     _lapse_correct!(buffers[canonical_name(r)], buffers[canonical_name(r.sample)], ctx)
 end
 function derive!(s::Temperature{Maximum}, buffers, ctx)
-    @. buffers[canonical_name(s)] =
-        buffers.mean_temperature + buffers.diurnal_temperature_range / 2
+    buffers[canonical_name(s)] .= buffers.mean_temperature .+ buffers.diurnal_temperature_range ./ 2
     return nothing
 end
 function derive!(s::Temperature{Minimum}, buffers, ctx)
-    @. buffers[canonical_name(s)] =
-        buffers.mean_temperature - buffers.diurnal_temperature_range / 2
+    buffers[canonical_name(s)] .= buffers.mean_temperature .- buffers.diurnal_temperature_range ./ 2
     return nothing
 end
 function derive!(s::Temperature{Mean}, buffers, ctx)
-    @. buffers[canonical_name(s)] =
-        (buffers.reference_temperature_max + buffers.reference_temperature_min) / 2
+    buffers[canonical_name(s)] .= (buffers.reference_temperature_max .+ buffers.reference_temperature_min) ./ 2
     return nothing
 end
 function derive!(s::ActualVapourPressure, buffers, ctx)
@@ -1290,11 +1287,11 @@ function derive!(::Pressure, buffers, ctx)
 end
 function derive!(::Reference{WindSpeed{Maximum}}, buffers, ctx)
     shear = _wind_height_correction(ctx.wind_reference_height)
-    @. buffers.reference_wind_max = buffers.wind_speed * shear
+    @. buffers.reference_wind_speed_max = buffers.wind_speed * shear
     return nothing
 end
 function derive!(::Reference{WindSpeed{Minimum}}, buffers, ctx)
-    @. buffers.reference_wind_min = buffers.reference_wind_max * 0.1
+    @. buffers.reference_wind_speed_min = buffers.reference_wind_speed_max * 0.1
     return nothing
 end
 function derive!(::CloudCover, buffers, ctx)
@@ -1315,11 +1312,11 @@ function derive!(::CloudCover, buffers, ctx)
     return nothing
 end
 function derive!(::CloudCover{Minimum}, buffers, ctx)
-    @. buffers.cloud_min = clamp(buffers.cloud_cover * 0.5, 0.0, 1.0)
+    @. buffers.cloud_cover_min = clamp(buffers.cloud_cover * 0.5, 0.0, 1.0)
     return nothing
 end
 function derive!(::CloudCover{Maximum}, buffers, ctx)
-    @. buffers.cloud_max = clamp(buffers.cloud_cover * 2.0, 0.0, 1.0)
+    @. buffers.cloud_cover_max = clamp(buffers.cloud_cover * 2.0, 0.0, 1.0)
     return nothing
 end
 function derive!(::SoilTemperature{Mean}, buffers, ctx)
