@@ -826,7 +826,12 @@ end
     _resample!(out, src, rule, nin, nout)
 @inline _disaggregate!(out, src, rule::Disaggregate, nin, nout, ctx) =
     _resample!(out, src, rule, nin, nout, ctx.scratch.solar.out.global_horizontal)
-@inline _resample_by_rule!(out, src, ::Accumulate, nin, nout, ctx) = nothing
+@inline function _resample_by_rule!(out, src, ::Accumulate, nin, nout, ctx)
+    # Coarsening accumulation (nin != nout) isn't implemented yet -- only the
+    # same-resolution passthrough, which is what SubDaily->SubDaily needs.
+    nin == nout && copyto!(out, src)
+    return nothing
+end
 
 
 @inline function _wind_speed!(out, u, v)
