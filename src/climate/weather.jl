@@ -176,6 +176,13 @@ end
 @inline _extra_getraster_kwargs(::Type) = (;)
 @inline _extra_getpoint_kwargs(::Type) = (;)
 
+# variables(source) alone misses fallback-contributed quantities (e.g. SILO's
+# CRUCL2 wind), so they'd never get copied into buffers.
+@inline _full_variables(source) = _merge_fallback_variables(source, fallback_source(source))
+@inline _merge_fallback_variables(source, ::Nothing) = variables(source)
+@inline _merge_fallback_variables(source, baseline) =
+    (variables(source)..., map(name -> _variable_for(variables(baseline), name), fallback_layers(source))...)
+
 @inline supports_points_loading(::Type) = true
 
 # A source's grid elevation is just its declared `Elevation()` quantity —
@@ -1049,7 +1056,7 @@ const _SERIES_DAILY = (Rainfall(DailyTotal()), SoilTemperature(Mean()), SoilMois
 function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep, source::Type,
                                    days_of_year::AbstractVector{Int})
     nsteps = length(days_of_year)
-    vars = variables(source)
+    vars = _full_variables(source)
     b = merge(_zero_buffers(_ENVELOPE_BUFFERS, nsteps), _variable_buffers(vars, nsteps))
 
     forcings = _envelope_forcings(vars, b)
@@ -1092,7 +1099,7 @@ function assemble_weather!(
 )
     buffers = scratch.weather
     atm_pressure = atmospheric_pressure(site.elevation)
-    vars = variables(source)
+    vars = _full_variables(source)
     cal = weather_calendar(source)
     native = native_timestep(source)
 
