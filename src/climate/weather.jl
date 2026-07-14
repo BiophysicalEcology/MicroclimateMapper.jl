@@ -954,9 +954,9 @@ end
 @inline _zero_buffers(quantities::Tuple, n) =
     NamedTuple{map(canonical_name, quantities)}(map(q -> _zeros(working_unit(q), n), quantities))
 
-function _environment_daily(n, rainfall, deep_soil_temperature)
+function _environment_daily(n, rainfall, deep_soil_temperature, shade::Vector{Float64})
     DailyTimeseries(;
-        shade = zeros(Float64, n),
+        shade,
         soil_wetness = zeros(Float64, n),
         surface_emissivity = fill(0.95, n),
         cloud_emissivity = fill(0.95, n),
@@ -1066,10 +1066,11 @@ function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep, sou
 
     forcings = _envelope_forcings(vars, b)
     environment_minmax = _minmax_env_type(calendar)(; forcings)
-    environment_daily = _environment_daily(nsteps, b.rainfall, b.deep_soil_temperature)
+    shade = zeros(Float64, nsteps)
+    environment_daily = _environment_daily(nsteps, b.rainfall, b.deep_soil_temperature, shade)
     environment_hourly = _environment_hourly_stub(nsteps)
 
-    return (; b..., days_of_year,
+    return (; b..., shade, days_of_year,
         environment_minmax, environment_daily, environment_hourly)
 end
 
@@ -1084,10 +1085,11 @@ function _allocate_weather_buffers(::Calendar, native_step::SubDaily, target_ste
     daily  = _zero_buffers(_SERIES_DAILY, ndays)
     native = _zero_buffers(native_names, nnat)
 
-    environment_daily  = _environment_daily(ndays, daily.rainfall_daily, daily.deep_soil_temperature)
+    shade = zeros(Float64, ndays)
+    environment_daily  = _environment_daily(ndays, daily.rainfall_daily, daily.deep_soil_temperature, shade)
     environment_hourly = _environment_hourly(output)
 
-    return (; output..., native, daily..., days_of_year,
+    return (; output..., native, daily..., shade, days_of_year,
         environment_minmax = nothing, environment_daily, environment_hourly)
 end
 

@@ -53,6 +53,7 @@ export
     NCEP,
     SurfaceFlux,
     # Microclimate drivers
+    LayerSpec,
     MicroMapModel,
     MicroRasterProblem,
     MicroVectorProblem,

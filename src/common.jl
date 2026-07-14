@@ -36,6 +36,7 @@ LayerSpec(name::Symbol, kind::Symbol) = LayerSpec{name, kind}()
 
 @inline _layer_name(::LayerSpec{N}) where N = N
 @inline _layer_source(result, ::LayerSpec{N, :profile}) where N = getproperty(result.profile, N)
+@inline _layer_source(result, ::LayerSpec{N, :solar}) where N = getproperty(result.solar_radiation, N)
 @inline _layer_source(result, ::LayerSpec{N}) where N = getproperty(result, N)
 
 const _DEFAULT_OUTPUT_LAYERS = (
@@ -782,6 +783,7 @@ function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple,
         soil = (ti, Dim{:depth}(ustrip.(u"m", model.depths))),
         profile = (ti, Dim{:height}(ustrip.(u"m", model.heights))),
         scalar = (ti,),
+        solar = (ti,),
     )
     return RasterStack(NamedTuple(map(layers) do spec
         _layer_name(spec) => _allocate_layer(proto, spec, spatial_dims, extra, mask)
