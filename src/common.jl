@@ -401,6 +401,11 @@ function _build_inputs_and_pool(;
 
     wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
     @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    if micro_model.canopy_model isa MultilayerCanopy
+        @info "model: canopy:          MultilayerCanopy — environment_daily.shade is ignored (ground shortwave/longwave transmission comes from the canopy's own radiative transfer instead)"
+    else
+        @info "model: canopy:          NoCanopy (shade-based vegetation handling)"
+    end
     sm_src = model.soil_moisture_source !== nothing ? " ($(model.soil_moisture_source))" : ""
     @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
     @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
