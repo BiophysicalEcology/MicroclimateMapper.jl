@@ -489,10 +489,13 @@ function _monthly_to_daily(layer::AbstractRaster, ref::AbstractRaster, years)
     ti = dims(ref, Ti)
     out = similar(data, size(data, 1), size(data, 2), length(ti))
     years_v = collect(years)
+    nout = length(ti)
     d = 0
     for (yi, y) in enumerate(years_v), m in 1:12
+        d >= nout && break
         @views month_slice = data[:, :, (yi - 1) * 12 + m]
         for _ in 1:Dates.daysinmonth(y, m)
+            d >= nout && break
             d += 1
             out[:, :, d] .= month_slice
         end
@@ -508,10 +511,13 @@ function _monthly_to_daily_points(layer::AbstractRaster, ref::AbstractRaster, ye
     ti = dims(ref, Ti)
     out = similar(data, size(data, 1), length(ti))
     years_v = collect(years)
+    nout = length(ti)
     d = 0
     for (yi, y) in enumerate(years_v), m in 1:12
+        d >= nout && break
         @views month_col = data[:, (yi - 1) * 12 + m]
         for _ in 1:Dates.daysinmonth(y, m)
+            d >= nout && break
             d += 1
             out[:, d] .= month_col
         end
