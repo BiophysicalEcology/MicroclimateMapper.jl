@@ -473,10 +473,13 @@ function _monthly_to_daily(layer::AbstractRaster, ref::AbstractRaster, years)
     ti = dims(ref, Ti)
     out = similar(data, size(data, 1), size(data, 2), length(ti))
     years_v = collect(years)
+    nout = length(ti)
     d = 0
     for (yi, y) in enumerate(years_v), m in 1:12
+        d >= nout && break
         @views month_slice = data[:, :, (yi - 1) * 12 + m]
         for _ in 1:Dates.daysinmonth(y, m)
+            d >= nout && break
             d += 1
             out[:, :, d] .= month_slice
         end
@@ -492,10 +495,13 @@ function _monthly_to_daily_points(layer::AbstractRaster, ref::AbstractRaster, ye
     ti = dims(ref, Ti)
     out = similar(data, size(data, 1), length(ti))
     years_v = collect(years)
+    nout = length(ti)
     d = 0
     for (yi, y) in enumerate(years_v), m in 1:12
+        d >= nout && break
         @views month_col = data[:, (yi - 1) * 12 + m]
         for _ in 1:Dates.daysinmonth(y, m)
+            d >= nout && break
             d += 1
             out[:, d] .= month_col
         end
@@ -845,10 +851,18 @@ end
 # Buffer allocation
 # ---------------------------------------------------------------------------
 
-function allocate_weather_buffers(source::Type, target::Timestep, years)
+"""
+    allocate_weather_buffers(source, target, years; days_of_year = _days_of_year(weather_calendar(source), years))
+
+Allocate per-thread weather scratch buffers sized to `days_of_year`. Pass the
+actual requested day-of-year vector for sub-yearly runs; defaults to the
+full `years` span otherwise.
+"""
+function allocate_weather_buffers(source::Type, target::Timestep, years;
+                                  days_of_year::AbstractVector{Int} = _days_of_year(weather_calendar(source), years))
     cal = weather_calendar(source)
     native = native_timestep(source)
-    _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, years))
+    _allocate_weather_buffers(cal, native, target, source, days_of_year)
 end
 
 # Which env timeseries a Sample's data feeds — `EnvHourly` sends the read
