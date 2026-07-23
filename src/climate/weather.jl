@@ -845,18 +845,10 @@ end
 # Buffer allocation
 # ---------------------------------------------------------------------------
 
-"""
-    allocate_weather_buffers(source, target, years; days_of_year = _days_of_year(weather_calendar(source), years))
-
-Allocate per-thread weather scratch buffers sized to `days_of_year`. Pass the
-actual requested day-of-year vector for sub-yearly runs; defaults to the
-full `years` span otherwise.
-"""
-function allocate_weather_buffers(source::Type, target::Timestep, years;
-                                  days_of_year::AbstractVector{Int} = _days_of_year(weather_calendar(source), years))
+function allocate_weather_buffers(source::Type, target::Timestep, years)
     cal = weather_calendar(source)
     native = native_timestep(source)
-    _allocate_weather_buffers(cal, native, target, source, days_of_year)
+    _allocate_weather_buffers(cal, native, target, source, _days_of_year(cal, years))
 end
 
 # Which env timeseries a Sample's data feeds — `EnvHourly` sends the read
