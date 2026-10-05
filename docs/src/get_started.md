@@ -1,7 +1,7 @@
 # Get started
 
 MicroclimateMapper.jl computes microclimates with [Microclimate.jl](https://biophysicalecology.github.io/Microclimate.jl/dev)
-for points or grids, taking the weather, terrain, soil and surface from spatial data sets.
+for points or grids, taking the weather, terrain, vegetation, soil and surface from spatial data sets.
 
 ```julia
 using Pkg
