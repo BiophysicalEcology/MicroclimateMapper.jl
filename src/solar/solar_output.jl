@@ -66,11 +66,15 @@ end
 # Predefined waveband constants
 # ---------------------------------------------------------------------------
 
+"Broadband global radiation on a horizontal surface, as the layer `global_radiation`."
 const SOLAR_BROADBAND = SolarOutputLayer(; name = :global_radiation)
+"Photosynthetically active radiation, 400–700 nm, on a horizontal surface, as the layer `par`."
 const SOLAR_PAR       = SolarOutputLayer(; name = :par,
     minimum_wavelength = 400.0, maximum_wavelength = 700.0)
+"Ultraviolet-B radiation, 290–315 nm, on a horizontal surface, as the layer `uv_b`."
 const SOLAR_UVB       = SolarOutputLayer(; name = :uv_b,
     minimum_wavelength = 290.0, maximum_wavelength = 315.0)
+"Near-infrared radiation, 700–4000 nm, on a horizontal surface, as the layer `nir`."
 const SOLAR_NIR       = SolarOutputLayer(; name = :nir,
     minimum_wavelength = 700.0, maximum_wavelength = 4000.0)
 

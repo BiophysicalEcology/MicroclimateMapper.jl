@@ -1,22 +1,47 @@
 name: Documentation
+
 on:
   push:
     branches:
       - main
     tags: '*'
   pull_request:
+
+# Sets permissions of the GITHUB_TOKEN
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  statuses: write
+
+concurrency:
+  # Skip intermediate builds: always.
+  # Cancel intermediate builds: only if it is a pull request build.
+  group: ${{ github.workflow }}-${{ github.ref }}-docs
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
-      - uses: julia-actions/setup-julia@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Julia
+        uses: julia-actions/setup-julia@v2
+      - name: Pull Julia cache
+        uses: julia-actions/cache@v2
+      - name: Cache downloaded data sets
+        uses: actions/cache@v4
         with:
-          version: '1'
-      - name: Install dependencies
-        run: julia --project=docs/ -e 'using Pkg; Pkg.develop(PackageSpec(path=pwd())); Pkg.instantiate()'
+          path: docs/data_cache
+          key: docs-data-${{ hashFiles('docs/src/**/*.md') }}
+          restore-keys: docs-data-
+      - name: Install Julia dependencies
+        run: julia --project=docs -e 'using Pkg; Pkg.instantiate()'
       - name: Build and deploy
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
-        run: julia --project=docs/ docs/make.jl
+          GKSwstype: "100"
+          JULIA_DEBUG: "Documenter"
+        run: julia --project=docs/ --threads=auto --color=yes docs/make.jl

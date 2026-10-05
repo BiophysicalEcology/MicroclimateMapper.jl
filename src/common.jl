@@ -35,6 +35,13 @@
 # power of two makes the cardinal directions land on sample points.
 const N_HORIZON_ANGLES = 32
 
+"""
+    LayerSpec(name, kind, source = name)
+
+An output layer for `MicroMapModel.output_layers`: the layer `name` in the output `RasterStack`, read from the
+field `source` of the point model's result. `kind` is its shape per point or cell: `:soil` (time × depth),
+`:profile` (time × height), `:scalar` (time) or `:canopy` (time × canopy layer).
+"""
 struct LayerSpec{Name, Kind, Source} end
 LayerSpec(name::Symbol, kind::Symbol, source::Symbol=name) = LayerSpec{name, kind, source}()
 
@@ -177,6 +184,13 @@ end
 # the spatial dim differs (`(X, Y)` vs `(Dim{:point},)`); every solve-time
 # code path indexes via `I::Tuple` of dim wrappers from `DimIndices`, so the
 # loop body is mode-agnostic.
+"""
+    MicroMapCache
+
+The workspace of one run, made by `init` on a `MicroVectorProblem` or `MicroRasterProblem`: the loaded and
+resampled forcings, the terrain (see [`terrain`](@ref)), and a pool of point-model caches, one for each worker.
+`solve!` solves it, and can be called again without reloading the data.
+"""
 mutable struct MicroMapCache{P,W,T,A,R,CO,M,POOL,SC,CC}
     problem::P                       # MicroRasterProblem/MicroVectorProblem
     weather::W                       # RasterStack
