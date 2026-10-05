@@ -83,7 +83,9 @@ export
     GeocodeResult,
     load_template,
     # Weather data pre-fetch/caching
-    prefetch_weather!
+    prefetch_weather!,
+    # Interactive app (MicroclimateMapperAppExt)
+    app
 
 include("utils/geocode.jl")
 include("utils/utils.jl")
@@ -118,5 +120,18 @@ include("common.jl")
 include("solar/solar_output.jl")
 include("raster.jl")
 include("vector.jl")
+
+"""
+    app(; port = 8080, open = true, data_path, host = "127.0.0.1", proxy_url = nothing)
+
+Start a local interactive app for point microclimates: choose a place on a map, swap data sets, change shade,
+height, snow, terrain, albedo and soil, compare data sets, and copy a Julia script that reproduces the run.
+
+Needs Bonito.jl and WGLMakie.jl: `using MicroclimateMapper, Bonito, WGLMakie; app()`.
+
+To serve it from a container, listen on all interfaces and give the public address:
+`app(; host = "0.0.0.0", port = 3838, open = false, proxy_url = "https://example.org/app/")`.
+"""
+function app end
 
 end

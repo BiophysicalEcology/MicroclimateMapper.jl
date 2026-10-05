@@ -5,9 +5,33 @@
 # magnitude at point of use. Each model returns a signed value privately;
 # `pedotransfer` applies `abs` once, in one place.
 
+"""
+    PedotransferModel
+
+Abstract supertype for functions that convert soil texture to Campbell hydraulic parameters, used by
+[`build_soil_profile`](@ref): `CosbyUnivariate`, `CosbyMultivariate` or `Campbell1985`.
+"""
 abstract type PedotransferModel end
+
+"""
+    CosbyUnivariate <: PedotransferModel
+
+Cosby et al. (1984), table 5: hydraulic parameters from the sand or clay fraction alone.
+"""
 struct CosbyUnivariate <: PedotransferModel end
+
+"""
+    CosbyMultivariate <: PedotransferModel
+
+Cosby et al. (1984), table 4: hydraulic parameters from the sand, silt and clay fractions.
+"""
 struct CosbyMultivariate <: PedotransferModel end
+
+"""
+    Campbell1985 <: PedotransferModel
+
+Campbell (1985): hydraulic parameters from the particle-size distribution and bulk density.
+"""
 struct Campbell1985 <: PedotransferModel end
 
 @inline function _pedotransfer_raw(::CosbyUnivariate, clay_percent, silt_percent, sand_percent, bulk_density)

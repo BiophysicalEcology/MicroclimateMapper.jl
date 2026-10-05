@@ -6,7 +6,7 @@
 [![Codecov](https://codecov.io/gh/BiophysicalEcology/MicroclimateMapper.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/BiophysicalEcology/MicroclimateMapper.jl/tree/main)
 
 Integration of [Microclimate.jl](https://github.com/BiophysicalEcology/Microclimate.jl) with spatial 
-data from [RasterDataSources.jl](https://github.com/EcoJulia/RasterDataSources.jl), for automated, declaratibe
+data from [RasterDataSources.jl](https://github.com/EcoJulia/RasterDataSources.jl), for automated, declarative
 and performant solves of microclimate models over many spatial datasets.
 
-Build on [Rasters.jl](https://github.com/rafaqz/Rasters.jl).
+Built on [Rasters.jl](https://github.com/rafaqz/Rasters.jl).

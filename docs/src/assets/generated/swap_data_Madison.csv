@@ -1,0 +1,8 @@
+site,source,calendar,within a day,days solved,seconds
+Madison,CRUCL2,Monthly,daily extremes,12,109.4
+Madison,WorldClim{Climate},Monthly,daily extremes,12,29.2
+Madison,TerraClimate{Historical},Monthly,daily extremes,12,51.7
+Melbourne,CRUCL2,Monthly,daily extremes,12,26.8
+Melbourne,SILO,Daily,daily extremes,365,30.3
+Melbourne,BARRA,Daily,24 a day,failed,
+Melbourne,ERA5,Daily,24 a day,failed,

@@ -1,0 +1,6 @@
+variable,RMSE (K),mean difference (K)
+air at 1 cm,1.9,1.11
+air at 1.2 m,0.22,-0.17
+soil surface,3.65,2.43
+soil 10 cm,2.14,1.91
+soil 50 cm,0.1,0.07

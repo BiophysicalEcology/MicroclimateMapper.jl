@@ -1,0 +1,4 @@
+pedotransfer,Campbell b,air-entry potential (J/kg),saturated conductivity (kg s/m³),field capacity (m³/m³),wilting point (m³/m³)
+CosbyUnivariate,4.88,0.89,0.00112,0.285,0.163
+CosbyMultivariate,4.82,0.86,0.00105,0.285,0.163
+Campbell1985,5.47,0.94,0.00107,0.285,0.163
