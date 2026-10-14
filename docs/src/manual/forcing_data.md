@@ -19,6 +19,7 @@ resolution, period, time step and the variables they provide:
 | `AWAP` | Australia | 0.05° (~5 km) | 1900 onwards | daily | maximum and minimum temperature, rainfall, radiation, vapour pressure at 09:00 and 15:00 | wind from `CRUCL2` | `micro_aust` |
 | `SILO` | Australia | 0.05° (~5 km) | 1889 onwards | daily | maximum and minimum temperature, rainfall, humidity at the times of the extremes, radiation | wind from `CRUCL2` | `micro_silo` |
 | `BARRA` | Australia | ~12 km (R2), ~4 km (C2) | 1979 onwards | hourly | temperature, wind, humidity, sea-level pressure, shortwave and longwave radiation, rainfall, elevation | — | `micro_barra` |
+| `seas5_forecast(start)` | global | 1° (~100 km) | forecasts from 1981, 215 days each | daily | maximum and minimum temperature, dew point, wind, radiation, rainfall; one ensemble member of one forecast | — | — |
 
 !!! warning "Status, October 2026"
     The bindings are being brought in line with new versions of RasterDataSources.jl and Rasters.jl. In the
@@ -45,6 +46,8 @@ take their other variables from the matching baseline climatology.
   cycle. The hourly forcing includes the natural covariation among variables which can be important for phenomena 
   like dew and frost; such covariation is stereotyped for the daily and monthly forcing (e.g., lowest wind speed 
   is always at the same time of day).
+- **For the coming months**, `seas5_forecast(start; member)`: ECMWF's SEAS5 seasonal forecast started in the
+  month of `start`, out to 215 days. A forecast is an ensemble; run each `member` (0–50) for its spread.
 - **For snow**, daily or hourly forcing. A monthly climatology has no individual storms, so snow cover comes and
   goes smoothly with the seasons.
 
@@ -70,6 +73,11 @@ Most sources are downloaded once and cached under `ENV["RASTERDATASOURCES_PATH"]
   - `ERA5CDS` (and `ERA5CDSLand`) use the Climate Data Store's own API, which queues a request and downloads
     regional monthly files, as NicheMapR's `micro_era5` does through mcera5. Also keyed. Not yet bound to the
     model.
+- **SEAS5** forecasts come through the Climate Data Store's queued API (`RasterDataSources.SEAS5`), so they
+  need a Copernicus key, in `ENV["CDSAPI_KEY"]` or `~/.cdsapirc`, and the data set's terms accepted once on its
+  page. The first run at a place queues seven requests, typically a few minutes; later runs in the same 1° cells
+  reuse the downloads. The data set has no soil state to start from, so set `init_source` (e.g. `ERA5ECMWFLand`)
+  or pass `init`.
 - **`SILO`** asks for an email address, read from `ENV["SILO_EMAIL"]`.
 - **`BARRA`** is read from the THREDDS server of Australia's National Computational Infrastructure.
 - **Point queries.** For a few points, the `PointQuery` loader fetches time series through

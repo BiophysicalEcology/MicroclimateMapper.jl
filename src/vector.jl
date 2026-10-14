@@ -208,6 +208,7 @@ function CommonSolve.init(problem::MicroVectorProblem)
        surface_albedo_source, roughness_height_source, soil_moisture_source, init_source) = model
 
     dates_vec = _normalise_dates(dates)
+    _check_weather_dates(weather_source, dates_vec)
     years = _years_from_dates(dates)
 
     # Inject soil_moisture_source into data before canonical-override resolution,

@@ -53,6 +53,9 @@ export
     # (the data-source kind); the timestep is specified separately on the run.
     NCEP,
     SurfaceFlux,
+    # SEAS5 seasonal forecasts (one start month + ensemble member per run)
+    SEAS5Forecast,
+    seas5_forecast,
     # Microclimate drivers
     LayerSpec,
     MicroMapModel,
@@ -115,6 +118,7 @@ include("climate/era5ecmwf.jl")
 include("climate/gridmet.jl")
 include("climate/silo.jl")
 include("climate/barra.jl")
+include("climate/seas5.jl")
 include("soil/cpcsoil.jl")
 include("common.jl")
 include("solar/solar_output.jl")

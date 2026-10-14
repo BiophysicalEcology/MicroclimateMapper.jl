@@ -67,7 +67,7 @@ timestep(t) = t isa M.MinMax ? "`MinMax()`, daily extremes" : t isa M.Hourly ? "
     t isa M.SixHourly ? "`SixHourly()`" : "`SubDaily{$(M.samples_per_day(t))}()`"
 fallback(S) = (f = M.fallback_source(S)) === nothing ? "—" : string(f)
 sources = (CRUCL2, WorldClim{Climate}, CHELSA{Climate}, TerraClimate, GRIDMET, NCEP{SurfaceFlux, 1}, ERA5, ERA5ECMWF,
-    ERA5ECMWFLand, AWAP, SILO, BARRA)
+    ERA5ECMWFLand, AWAP, SILO, BARRA, seas5_forecast(M.Date(2026, 9, 1)))
 markdown_table(["Data set", "Calendar", "Within a day", "Loader", "Fallback"],
     [("`$S`", nameof(typeof(M.weather_calendar(S))), timestep(M.native_timestep(S)),
       nameof(typeof(M.loader(S))), fallback(S)) for S in sources])

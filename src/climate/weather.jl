@@ -185,6 +185,9 @@ end
         (first(candidates), _names_absent(own, Base.tail(candidates))...)
 @inline _extra_getraster_kwargs(::Type) = (;)
 @inline _extra_getpoint_kwargs(::Type) = (;)
+# Errors when run `dates` fall outside what `source` can supply -- for sources
+# whose coverage is narrower than whole `years` (e.g. a SEAS5 forecast).
+@inline _check_weather_dates(::Type, _dates) = nothing
 
 # variables(source) alone misses fallback-contributed quantities (e.g. SILO's
 # CRUCL2 wind), so they'd never get copied into buffers.
