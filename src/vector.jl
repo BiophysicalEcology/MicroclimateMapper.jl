@@ -275,11 +275,13 @@ function CommonSolve.init(problem::MicroVectorProblem)
         RasterStack()
     elseif !haskey(data, :weather) && supports_points_loading(weather_source)
         weather_native = _load_weather_points(weather_source, points_dim, years)
+        _check_weather_covers(weather_source, weather_native, years, ti_end)
         weather_native[Ti(ti_start:ti_end)]
     else
         weather_buffer = points_load_buffer(weather_source)
         weather_area = Extents.buffer(area, (X = weather_buffer, Y = weather_buffer))
         weather_native = _resolve_weather(data, weather_source, weather_area, years)
+        _check_weather_covers(weather_source, weather_native, years, ti_end)
         # Slice to the requested date range before per-point extraction —
         # positional Ti indexing works for both integer and DateTime Ti axes.
         weather_native = weather_native[Ti(ti_start:ti_end)]

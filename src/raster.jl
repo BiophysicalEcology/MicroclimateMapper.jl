@@ -264,6 +264,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
         weather_area = Extents.buffer(extent, (X = buffer_deg, Y = buffer_deg))
         @info "init: loading weather..."
         wf = _resolve_weather(data, weather_source, weather_area, years)
+        _check_weather_covers(weather_source, wf, years, ti_end)
         @info "init: resampling weather to template..."
         wf = _resample_weather_to_template(wf, template_2d)
         @info "init: slicing weather to date range..."
