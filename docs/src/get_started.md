@@ -25,8 +25,9 @@ Palm Springs, California, lies at the foot of Mount San Jacinto, 13 km away and 
 [A lizard's day](https://biophysicalecology.github.io/BiophysicalBehaviour.jl/dev/tutorials/lizard) lives on the
 desert floor.
 
-The point model is a `MicroModel` of Microclimate.jl: soil depths, heights above ground, soil properties and
-snow, see its [Configuring the model](https://biophysicalecology.github.io/Microclimate.jl/dev/manual/configuring_the_model).
+The point model is a `MicroModel` of Microclimate.jl: the soil column, heights above ground and snow, see its
+[Configuring the model](https://biophysicalecology.github.io/Microclimate.jl/dev/manual/configuring_the_model). Its
+`site` is `nothing`: each point's site comes from the terrain.
 
 ```@example get_started
 using MicroclimateMapper, Microclimate, RasterDataSources, Rasters, Dates, Unitful
@@ -34,10 +35,13 @@ using Microclimate: example_soil_profile, example_soil_properties_model, example
 
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 heights = [0.01, 1.2]u"m"
-micro_model = MicroModel(; depths, heights,
-    soil_properties_model = example_soil_properties_model(),
-    soil_hydraulic_model = example_soil_hydraulic_model(),
-    snow_model = SnowModel(),
+soil = SoilModel(; depths, profile = example_soil_profile(depths),
+    properties_model = example_soil_properties_model(),
+    hydraulic_model = example_soil_hydraulic_model(),
+)
+micro_model = MicroModel(; site = nothing, soil,
+    atmosphere = AtmosphereModel(; heights),
+    snow = SnowModel(),
 )
 nothing # hide
 ```
@@ -62,7 +66,6 @@ A [`MicroVectorProblem`](@ref) gives it places and dates. Points are `(longitude
 sites = [(-116.545, 33.830), (-116.679, 33.814)]   # Palm Springs, San Jacinto Peak
 problem = MicroVectorProblem(; model, points = sites,
     dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
-    soil_profile = example_soil_profile(depths),
     init = (; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u"cm"),
 )
 cache = init(problem)     # loads the data
@@ -115,7 +118,6 @@ grid_model = MicroMapModel(; micro_model, dem_source = CRUCL2, weather_source = 
 grid = MicroRasterProblem(; model = grid_model, area,
     template = load_template(CRUCL2, area),
     dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
-    soil_profile = example_soil_profile(depths),
     init = (; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u"cm"),
 )
 maps = solve(grid)
@@ -144,7 +146,6 @@ worldclim = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = Wor
     soil_moisture_source = CPCSoil, surface_albedo_source = 0.15, roughness_height_source = 0.004u"m")
 other = solve(MicroVectorProblem(; model = worldclim, points = sites,
     dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
-    soil_profile = example_soil_profile(depths),
     init = (; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u"cm")))
 markdown_table(["", "CRU CL 2.0", "WorldClim"], [ # hide
     ("hottest soil surface at Palm Springs (°C)", maximum(celsius.(soil_surface[point = 1])), maximum(celsius.(other.soil_temperature[point = 1, depth = 1]))), # hide

@@ -39,7 +39,7 @@ is sea, with no data. TerraClimate's 4 km grid has two cells on the island, so i
 model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = TerraClimate{Historical},
     surface_albedo_source = 0.15, roughness_height_source = 0.004u"m")
 problem = MicroRasterProblem(; model, area = Extents.extent(island), template = island,
-    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31), soil_profile = example_soil_profile(depths),
+    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
     data = (; dem = coalesce.(island, 0.0)))
 output = solve(problem)
 ```
@@ -77,7 +77,7 @@ every 20 m:
 ```julia
 par = solve(MicroRasterProblem(; model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = TerraClimate{Historical},
         solar_only = true, solar_output_layers = (SOLAR_PAR,)), area, template = island_20m, dates,
-    soil_profile = example_soil_profile(depths), data = (; dem = coalesce.(island_20m, 0.0))))
+    data = (; dem = coalesce.(island_20m, 0.0))))
 ```
 
 ![PAR on Saba](../assets/generated/saba_par.png)

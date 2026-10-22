@@ -16,11 +16,11 @@
 #     run template at `init` time
 
 """
-    MicroRasterProblem(; model, area, dates, template, soil_profile, init=nothing, data=(;))
+    MicroRasterProblem(; model, area, dates, template, init=nothing, data=(;))
 
 Concrete grid-microclimate run: pairs a `MicroMapModel` with a spatial
-extent, date range, soil column profile, initial conditions, and any
-per-run data overrides.
+extent, date range, initial conditions, and any per-run data overrides.
+The soil column is `model.micro_model.soil`.
 
 - `model::MicroMapModel`
 - `area` — `Extents.Extent` (run every pixel of the template) or any
@@ -37,11 +37,8 @@ per-run data overrides.
       `area` and use it as the grid; weather is resampled onto it.
     * `Raster` — use the supplied raster's `X`/`Y` lookup as the grid;
       weather is resampled onto it. Only `X`/`Y` dims are read.
-- `soil_profile::SoilProfile` — per-depth `bulk_density` and
-  `mineral_density`. Currently uniform across pixels (a per-pixel
-  `soil_profile_source` is a planned extension).
 - `init` — initial conditions; default fills `soil_moisture` from
-  `model.micro_model.depths` and lets `soil_temperature` fall back to the
+  `model.micro_model.soil.depths` and lets `soil_temperature` fall back to the
   day-mean reference air temperature
 - `data::NamedTuple` — overrides for any of:
     * collection sources: `weather` (RasterStack), `landcover` (Stack/Raster)
@@ -51,12 +48,11 @@ per-run data overrides.
       units; resampled to the run template automatically.
     * `shade` — fraction (0–1) of shade cast over the site; default 0.
 """
-@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,DT<:Union{Date,AbstractRange{Date}},T,SP<:SoilProfile,IT,D<:NamedTuple,TC<:Timestep}
+@kwdef struct MicroRasterProblem{M<:MicroMapModel,A,DT<:Union{Date,AbstractRange{Date}},T,IT,D<:NamedTuple,TC<:Timestep}
     model::M
     area::A
     dates::DT
     template::T
-    soil_profile::SP
     init::IT = nothing
     data::D = (;)
     # Target output timestep — the step within a day. Default hourly.
@@ -197,7 +193,7 @@ overrides), pre-resolve every grid onto the run template, allocate the
 worker-cache pool, and prepare for `solve!`.
 """
 function CommonSolve.init(problem::MicroRasterProblem)
-    (; model, area, dates, soil_profile, data) = problem
+    (; model, area, dates, data) = problem
     (; dem_source, weather_source, landcover_source,
        surface_albedo_source, roughness_height_source, soil_moisture_source, init_source) = model
 
@@ -310,18 +306,18 @@ function CommonSolve.init(problem::MicroRasterProblem)
     solar_pairs = _make_solar_pairs(
         _effective_solar_layers(model), cloud_constants.solar_model.wavelengths)
     @info "init: building cache pool..."
-    build_inputs, cache_pool = _build_inputs_and_pool(;
+    build_pixel, cache_pool = _build_pixel_and_pool(;
         model, weather_source, weather, terrain, mask,
         albedo_grid, roughness_grid, canonical_overrides,
         init_inputs, soil_moisture_available, years, days = days_doy, cloud_constants,
-        soil_profile, target_timestep = target, init_soil,
+        target_timestep = target, init_soil,
     )
     @info "init: done"
 
     return MicroMapCache(
         problem, weather, terrain, albedo_grid, roughness_grid,
         canonical_overrides, mask, cache_pool,
-        (; init_inputs, build_inputs, anchor_dates, solar_pairs),
+        (; init_inputs, build_pixel, anchor_dates, solar_pairs),
         cloud_constants,
     )
 end

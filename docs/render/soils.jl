@@ -36,16 +36,16 @@ save_figure("soils_profiles.png", fig)
 # Not yet on the page (October 2026): with the SLGA profiles, Microclimate.jl's dynamic soil moisture dries the top
 # layers to 0% and does not rewet them, which is physically impossible; the example loam behaves. Report, then use.
 const YEAR_2025 = Date(2025, 1, 1):Day(1):Date(2025, 12, 31)
-dynamic = map_model(; weather = SILO,
-    micro = micro_model(; snow = false, config = MicroConfig(; soil_moisture_strategy = DynamicSoilMoisture())))
+dynamic(profile) = map_model(; weather = SILO,
+    micro = micro_model(; snow = false, profile, moisture_strategy = DynamicSoilMoisture()))
 soils = [("example loam", example_soil_profile(DEPTHS))]
 for (name, p) in profiles
     name in ("CosbyMultivariate", "Campbell1985") && push!(soils, ("SLGA, $name", p.soil_profile))
 end
 runs = []
 for (label, sp) in soils
-    out, t = timed("SILO 2025, dynamic soil moisture, $label", () -> solve(MicroVectorProblem(; model = dynamic,
-        points = [MELBOURNE], dates = YEAR_2025, soil_profile = sp, init = start(; snow = false))))
+    out, t = timed("SILO 2025, dynamic soil moisture, $label", () -> solve(MicroVectorProblem(; model = dynamic(sp),
+        points = [MELBOURNE], dates = YEAR_2025, init = start(; snow = false))))
     out === nothing && continue
     push!(runs, (label, out))
 end

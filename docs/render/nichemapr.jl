@@ -10,7 +10,7 @@ col(t, name) = Float64.(t.data[:, findfirst(==(name), t.header)])
 
 model = map_model(; micro = micro_model(; snow = false, heights = [0.01, 1.2]u"m"), weather = TerraClimate{Historical})
 out, t = timed("TerraClimate, Madison, 2000", () -> solve(MicroVectorProblem(; model, points = [(-89.4557, 43.1379)],
-    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31), soil_profile = example_soil_profile(DEPTHS),
+    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
     init = start(; snow = false))))
 
 rmse(a, b) = sqrt(mean((a .- b) .^ 2))

@@ -20,10 +20,13 @@ const GENERATED = mkpath(joinpath(@__DIR__, "..", "src", "assets", "generated"))
 const DEPTHS = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 const HEIGHTS = [0.01, 1.2]u"m"
 
-micro_model(; snow = true, heights = HEIGHTS, kw...) = MicroModel(; depths = DEPTHS, heights,
-    soil_properties_model = example_soil_properties_model(),
-    soil_hydraulic_model = example_soil_hydraulic_model(),
-    snow_model = snow ? SnowModel() : NoSnow(), kw...)
+micro_model(; snow = true, heights = HEIGHTS, profile = example_soil_profile(DEPTHS),
+    moisture_strategy = PrescribedSoilMoisture(), kw...) = MicroModel(; site = nothing,
+    soil = SoilModel(; depths = DEPTHS, profile,
+        properties_model = example_soil_properties_model(),
+        hydraulic_model = example_soil_hydraulic_model(), moisture_strategy),
+    atmosphere = AtmosphereModel(; heights),
+    snow = snow ? SnowModel() : NoSnow(), kw...)
 
 map_model(; micro = micro_model(), dem = SRTM, weather = CRUCL2, kw...) = MicroMapModel(;
     micro_model = micro, dem_source = dem, weather_source = weather,

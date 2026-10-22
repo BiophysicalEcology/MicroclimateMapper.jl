@@ -55,7 +55,7 @@ and horizon calculations:
 
 ```julia
 cache = init(problem)
-again = MicroRasterProblem(; model = other_model, area, template, dates, soil_profile,
+again = MicroRasterProblem(; model = other_model, area, template, dates,
     data = (; terrain = terrain(cache)))
 ```
 

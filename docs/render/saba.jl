@@ -28,7 +28,7 @@ end
 saba_problem(dem; kw...) = MicroRasterProblem(;
     model = map_model(; micro = micro_model(; snow = false), weather = TerraClimate{Historical}, kw...),
     area = Rasters.Extents.extent(dem), template = dem, dates = YEAR,
-    soil_profile = example_soil_profile(DEPTHS), init = start(; snow = false), data = (; dem = coalesce.(dem, 0.0)))
+    init = start(; snow = false), data = (; dem = coalesce.(dem, 0.0)))
 
 rows = Any[]
 island = saba_lonlat(8)

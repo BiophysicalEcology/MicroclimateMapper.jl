@@ -15,7 +15,7 @@ using MicroclimateMapper, Microclimate, RasterDataSources, Rasters, Dates, Unitf
 run_with(source, point, dates) = solve(MicroVectorProblem(;
     model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = source,
         soil_moisture_source = CPCSoil, surface_albedo_source = 0.15, roughness_height_source = 0.004u"m"),
-    points = [point], dates, soil_profile = example_soil_profile(depths),
+    points = [point], dates,
     init = (; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u"cm")))
 
 madison = (-89.40123, 43.07305)

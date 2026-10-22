@@ -13,8 +13,8 @@
 #
 # The mode-specific `init` methods load and spatially-extract their forcings
 # (weather, terrain, albedo, roughness, canonical overrides) into matching
-# `Raster` shapes, then hand off to the shared `_build_inputs_and_pool`
-# factory which produces the per-pixel `build_inputs` closure and worker pool
+# `Raster` shapes, then hand off to the shared `_build_pixel_and_pool`
+# factory which produces the per-pixel `build_pixel` closure and worker pool
 # used by `solve!`.
 
 # ---------------------------------------------------------------------------
@@ -127,7 +127,9 @@ Declarative description of a microclimate run. Constant across spatial
 extents and time ranges — pair with a `MicroRasterProblem` (grid) or
 `MicroVectorProblem` (points) to actually run.
 
-- `micro_model::MicroModel` — inner per-pixel physics model
+- `micro_model::MicroModel` — inner per-pixel physics model, built with
+  `site = nothing`: each pixel's `Site` comes from the terrain and surface
+  grids. `micro_model.soil.profile` is used at every pixel.
 - `dem_source` — DEM data-source type (e.g. `SRTM`)
 - `weather_source` — weather data-source type (e.g. `TerraClimate{Historical}`)
 - `landcover_source` — optional land-cover data-source type
@@ -200,7 +202,7 @@ mutable struct MicroMapCache{P,W,T,A,R,CO,M,POOL,SC,CC}
     canonical_overrides::CO          # NamedTuple of pre-extracted Rasters
     mask::M                          # nothing, or a 2-D Bool Raster (X, Y)
     cache_pool::POOL                 # Channel{(; micro::MicroCache, scratch)}
-    init_inputs::SC                  # Resolved initial conditions + build_inputs closure
+    init_inputs::SC                  # Resolved initial conditions + build_pixel closure
     cloud_constants::CC              # Shared SolarRadiation constants
 end
 
@@ -239,7 +241,7 @@ end
 # Resolve initial conditions. Every key defaults to `nothing`, meaning
 # "fall back to the weather source / data override / inner-solver default"
 # — never fabricated. User-supplied keys override; missing keys are filled
-# from `_DEFAULT_INIT` so the build_inputs closure always sees a complete
+# from `_DEFAULT_INIT` so the build_pixel closure always sees a complete
 # NamedTuple.
 const _DEFAULT_INIT = (
     soil_temperature = nothing,
@@ -404,20 +406,22 @@ function _build_cloud_constants()
     )
 end
 
-# Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
+# Build the `build_pixel(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
-function _build_inputs_and_pool(;
+function _build_pixel_and_pool(;
     model, weather_source, weather, terrain, mask,
     albedo_grid, roughness_grid, canonical_overrides,
     init_inputs, soil_moisture_available, years, days, cloud_constants,
-    soil_profile, target_timestep::Timestep = Hourly(),
+    target_timestep::Timestep = Hourly(),
     init_soil = (; soil_temperature = nothing, soil_moisture = nothing),
 )
     (; micro_model, lapse_rate_model) = model
     vapour_pressure_method = micro_model.vapour_pressure_equation
+    (; depths) = micro_model.soil
+    (; heights) = micro_model.atmosphere
 
     calendar = weather_calendar(weather_source)
     # Must match `days`, not the full `years` span, or sub-yearly runs
@@ -442,31 +446,32 @@ function _build_inputs_and_pool(;
     if model.solar_only
         @info "model: threads: $(Threads.nthreads())"
         # No ODE needed — pool contains scratch-only workers (no micro field).
-        # build_inputs is never called in _solve_solar_only!.
-        _build_inputs_noop = (scratch, I) -> nothing
+        # build_pixel is never called in _solve_solar_only!.
+        _build_pixel_noop = (scratch, I) -> nothing
         proto = (; scratch = allocate_scratch())
         cache_pool = Channel{typeof(proto)}(nworkers)
         put!(cache_pool, proto)
         for _ in 2:nworkers
             put!(cache_pool, (; scratch = allocate_scratch()))
         end
-        return (_build_inputs_noop, cache_pool)
+        return (_build_pixel_noop, cache_pool)
     end
 
-    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
-    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
-    if micro_model.canopy_model isa MultilayerCanopy
+    wind_tgt = round(ustrip(u"m", maximum(heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(micro_model.snow)))"
+    if micro_model.canopy isa MultilayerCanopy
         @info "model: canopy:          MultilayerCanopy — environment_daily.shade is ignored (ground shortwave/longwave transmission comes from the canopy's own radiative transfer instead)"
     else
         @info "model: canopy:          NoCanopy (shade-based vegetation handling)"
     end
     sm_src = model.soil_moisture_source !== nothing ? " ($(model.soil_moisture_source))" : ""
-    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
+    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.soil.moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
     @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
     @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
     @info "model: threads:         $(Threads.nthreads())"
 
-    function build_inputs(scratch, I::Tuple)
+    # The pixel's model (the template with this pixel's site) and inputs.
+    function build_pixel(scratch, I::Tuple)
         horizon_angles = terrain.horizon_angles[I...]
         site = Site(;
             elevation = terrain.elevation[I...],
@@ -485,23 +490,23 @@ function _build_inputs_and_pool(;
         env = assemble_weather!(scratch, weather, weather_source, site, I;
             vapour_pressure_method, lapse_rate_model, canonical_overrides,
             grid_elevation = isnothing(ge) ? site.elevation : ge,
-            wind_reference_height = maximum(micro_model.heights),
+            wind_reference_height = maximum(heights),
             target_timestep)
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
-            soil_moisture_available, micro_model.depths,
+            soil_moisture_available, depths,
             init_soil.soil_moisture === nothing ? nothing : init_soil.soil_moisture[I...],
         )
         initial_soil_temperature = _initial_soil_temperature(
             init_inputs.soil_temperature,
             init_soil.soil_temperature === nothing ? nothing : init_soil.soil_temperature[I...],
-            micro_model.depths,
+            depths,
         )
         # Snow init: fall back to MicroInputs' own defaults when the user
         # didn't supply a value. `initial_snow_density = nothing` is the
         # MicroInputs default ("use the snow model's snow_density") — pass
         # through unchanged.
-        MicroInputs(; site, soil_profile,
+        inputs = MicroInputs(;
             env.environment_minmax, env.environment_daily, env.environment_hourly,
             initial_soil_temperature,
             initial_soil_moisture,
@@ -509,6 +514,7 @@ function _build_inputs_and_pool(;
             initial_snow_temperature = something(init_inputs.snow_temperature, u"K"(0.0u"°C")),
             initial_snow_density = init_inputs.snow_density,
         )
+        return (; model = setproperties(micro_model, (; site)), inputs)
     end
 
     ci = findfirst(mask)
@@ -516,8 +522,8 @@ function _build_inputs_and_pool(;
         error("All pixels are masked or have missing weather data (ocean?).")
     first_I = DimIndices(terrain.elevation)[ci]
     npixels = length(terrain.elevation)
-    build_cache() = let scratch = allocate_scratch()
-        (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
+    build_cache() = let scratch = allocate_scratch(), pixel = build_pixel(scratch, first_I)
+        (micro = CommonSolve.init(MicroProblem(pixel.model, pixel.inputs; days, time_mode)),
          scratch)
     end
 
@@ -528,7 +534,7 @@ function _build_inputs_and_pool(;
         put!(cache_pool, build_cache())
     end
 
-    return (build_inputs, cache_pool)
+    return (build_pixel, cache_pool)
 end
 
 # ---------------------------------------------------------------------------
@@ -619,7 +625,8 @@ function _solve_proto_pixel!(cache)
     proto = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
         mask[I...] || continue
-        reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
+        pixel = cache.init_inputs.build_pixel(proto.scratch, I)
+        reinit!(proto.micro, pixel.model, pixel.inputs)
         try
             solve!(proto.micro)
             return proto, I, proto.micro.output
@@ -633,7 +640,7 @@ end
 function _solve_remaining!(output, solar_output, cache, proto, first_I)
     cache_pool = cache.cache_pool
     layers = cache.problem.model.output_layers
-    build_inputs = cache.init_inputs.build_inputs
+    build_pixel = cache.init_inputs.build_pixel
     mask = cache.mask
     has_solar = solar_output !== nothing
     solar_pairs = cache.init_inputs.solar_pairs
@@ -667,7 +674,8 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
             c = take!(cache_pool)
             try
                 for I in work
-                    reinit!(c.micro, build_inputs(c.scratch, I))
+                    pixel = build_pixel(c.scratch, I)
+                    reinit!(c.micro, pixel.model, pixel.inputs)
                     try
                         solve!(c.micro)
                     catch
@@ -841,15 +849,17 @@ function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple,
                           anchor_dates::AbstractVector{Date}, mask)
     spatial_dims = dims(terrain.elevation)
     ti = Ti(_ti_datetime_axis(anchor_dates, model.hours))
+    (; depths) = model.soil
+    (; heights) = model.atmosphere
     # Dim lookups must be plain numbers, not Unitful — Unitful in dims
     # breaks NetCDF I/O and surprises selectors. Strip both to metres so
     # `depth` and `height` share a single linear axis.
     extra = (
-        soil = (ti, Dim{:depth}(ustrip.(u"m", model.depths))),
-        profile = (ti, Dim{:height}(ustrip.(u"m", model.heights))),
+        soil = (ti, Dim{:depth}(ustrip.(u"m", depths))),
+        profile = (ti, Dim{:height}(ustrip.(u"m", heights))),
         scalar = (ti,),
         solar = (ti,),
-        canopy = (ti, Dim{:canopy_layer}(1:Microclimate.n_canopy_layers(model.canopy_model, model.heights))),
+        canopy = (ti, Dim{:canopy_layer}(1:Microclimate.n_canopy_layers(model.canopy, heights))),
     )
     return RasterStack(NamedTuple(map(layers) do spec
         _layer_name(spec) => _allocate_layer(proto, spec, spatial_dims, extra, mask)

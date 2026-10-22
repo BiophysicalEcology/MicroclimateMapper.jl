@@ -11,7 +11,7 @@ srtm(area, factor) = (r = read(crop(Raster(SRTM; extent = area, lazy = true); to
                       factor == 1 ? r : aggregate(mean, r, factor))
 
 grid(area, template) = MicroRasterProblem(; model = map_model(), area, template,
-    dates = YEAR, soil_profile = example_soil_profile(DEPTHS), init = start())
+    dates = YEAR, init = start())
 
 hottest(out) = celsius.(maximum(out.soil_temperature[depth = 1]; dims = Ti)[Ti = 1])
 coldest(out) = celsius.(minimum(out.soil_temperature[depth = 1]; dims = Ti)[Ti = 1])

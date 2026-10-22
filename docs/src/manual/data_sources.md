@@ -108,7 +108,7 @@ Any canonical variable can be supplied directly through `data` on a problem, as 
 in place of what the data set gives. It is resampled to the run's grid or points:
 
 ```julia
-problem = MicroRasterProblem(; model, area, template, dates, soil_profile,
+problem = MicroRasterProblem(; model, area, template, dates,
     data = (; cloud_cover = my_cloud_raster, shade = 0.3))
 ```
 
