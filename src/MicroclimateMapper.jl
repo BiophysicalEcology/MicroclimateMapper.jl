@@ -12,6 +12,7 @@ using Microclimate
 using CommonSolve: CommonSolve
 using Microclimate: DEFAULT_DEPTHS
 using Microclimate: example_soil_hydraulic_model, example_soil_properties_model, example_soil_profile
+using ConstructionBase: setproperties
 using SolarRadiation
 using FluidProperties
 using FluidProperties: GoffGratch, Teten, Huang, VapourPressureEquation

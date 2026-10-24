@@ -24,7 +24,7 @@ template = aggregate(mean, srtm, 10)                       # ~900 m
 model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = CRUCL2,
     surface_albedo_source = 0.15, roughness_height_source = 0.004u"m")
 output = solve(MicroRasterProblem(; model, area, template,
-    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31), soil_profile = example_soil_profile(depths),
+    dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31),
     init = (; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u"cm")))
 
 hottest = maximum(output.soil_temperature[depth = 1]; dims = Ti)
@@ -58,7 +58,7 @@ A 66 × 66 grid at SRTM's own resolution, about 90 m, over the summit of Mont Ai
 
 ```julia
 area = Extent(X = (3.554, 3.608), Y = (44.095, 44.149))
-output = solve(MicroRasterProblem(; model, area, template = SRTM, dates, soil_profile, init))
+output = solve(MicroRasterProblem(; model, area, template = SRTM, dates, init))
 ```
 
 `template = SRTM` loads the DEM over the area and uses its own grid. Soil temperature at 5 cm through the

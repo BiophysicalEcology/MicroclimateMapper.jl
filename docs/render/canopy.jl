@@ -38,14 +38,9 @@ function canopy_model(canopy_height, plant_area_index_total)
     reference_height = max(2.0u"m", canopy_height + 2.0u"m")
     heights = canopy_heights(canopy_height, reference_height)
     plant_area_index = pai_profile(heights, canopy_height, plant_area_index_total)
-    model = MultilayerCanopy(; canopy_height, plant_area_index, shortwave_model = TwoStreamRadiation(),
-        convergence_model = PicardCanopyConvergence(;
-            convergence = IterationToleranceConvergence(; tolerance = 0.1u"K", max_iterations_per_day = 20), relaxation = 0.7))
-    micro = MicroModel(; hours = 0:1:23, depths = DEPTHS, heights,
-        soil_properties_model = example_soil_properties_model(), soil_hydraulic_model = example_soil_hydraulic_model(),
-        snow_model = NoSnow(), canopy_model = model,
+    model = MultilayerCanopy(; canopy_height, plant_area_index, shortwave_model = TwoStreamRadiation())
+    micro = micro_model(; snow = false, heights, hours = 0:1:23, canopy = model,
         config = MicroConfig(; convergence = IterationToleranceConvergence(; tolerance = 0.1u"K", max_iterations_per_day = 20),
-            soil_moisture_strategy = PrescribedSoilMoisture(),
             canopy_soil_convergence = IterationToleranceConvergence(; tolerance = 0.1u"K", max_iterations_per_day = 20)))
     map_model(; micro, weather = TerraClimate{Historical}, output_layers = (
         LayerSpec(:soil_temperature, :soil), LayerSpec(:air_temperature, :profile),
@@ -60,7 +55,7 @@ rows = Any[]
 for (name, h) in classes
     model = h == 0 ? open_model : canopy_model(h * u"m", h < 5 ? 1.5 : 4.0)
     out, t = timed("$name, $(h) m", () -> solve(MicroVectorProblem(; model, points = point, dates = YEAR,
-        soil_profile = example_soil_profile(DEPTHS), init = start(; snow = false))))
+        init = start(; snow = false))))
     out === nothing && continue
     push!(results, (name, h, out))
     push!(rows, (name, h, round(t; digits = 1)))

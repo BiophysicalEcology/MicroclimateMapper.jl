@@ -48,7 +48,7 @@ rasters as for albedo and roughness, is planned, and not all of them are wired i
 
 ## Soil profile
 
-The `soil_profile` of a problem gives the bulk density, mineral density and hydraulic properties of each soil
+The `profile` of the point model's `SoilModel` gives the bulk density, mineral density and hydraulic properties of each soil
 layer, see Microclimate.jl's
 [Soil thermal properties](https://biophysicalecology.github.io/Microclimate.jl/dev/manual/soil_thermal_properties)
 and [Soil moisture](https://biophysicalecology.github.io/Microclimate.jl/dev/manual/soil_moisture).
@@ -58,7 +58,8 @@ maps:
 ```julia
 soil = build_soil_profile(SoilGrids, (-89.40, 43.07); depths)   # a point, anywhere
 soil = build_soil_profile(SLGA, area; depths)                   # an area in Australia, averaged
-problem = MicroVectorProblem(; model, points, dates, soil_profile = soil.soil_profile)
+soil_model = SoilModel(; depths, profile = soil.soil_profile,
+    properties_model = example_soil_properties_model(), hydraulic_model = example_soil_hydraulic_model())
 ```
 
 It reads clay, silt and sand fractions and bulk density at the depths of the data set,
@@ -80,7 +81,7 @@ from cell to cell is planned.
 
 ## Soil moisture
 
-How soil moisture is treated is set by Microclimate.jl's `soil_moisture_strategy`:
+How soil moisture is treated is set by the `moisture_strategy` of Microclimate.jl's `SoilModel`:
 
 - **prescribed** (the default): a time series of moisture is given, and only heat is solved;
 - **dynamic**: infiltration, redistribution, evaporation and root uptake are solved from the rainfall, which

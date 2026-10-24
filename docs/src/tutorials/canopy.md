@@ -34,9 +34,9 @@ planned.
 
 ```julia
 canopy = MultilayerCanopy(; canopy_height = 13.0u"m", plant_area_index, shortwave_model = TwoStreamRadiation())
-micro_model = MicroModel(; depths, heights, canopy_model = canopy,
-    soil_properties_model = example_soil_properties_model(),
-    soil_hydraulic_model = example_soil_hydraulic_model(), snow_model = NoSnow())
+soil = SoilModel(; depths, profile = example_soil_profile(depths),
+    properties_model = example_soil_properties_model(), hydraulic_model = example_soil_hydraulic_model())
+micro_model = MicroModel(; site = nothing, soil, atmosphere = AtmosphereModel(; heights), canopy)
 model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = TerraClimate{Historical},
     output_layers = (LayerSpec(:soil_temperature, :soil), LayerSpec(:leaf_temperature, :canopy),
                      LayerSpec(:canopy_air_temperature, :canopy, :air_temperature)))

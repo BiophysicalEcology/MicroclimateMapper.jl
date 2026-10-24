@@ -27,8 +27,8 @@ about where or when. A [`MicroVectorProblem`](@ref) pairs it with points and dat
 
 ```julia
 model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = CRUCL2)
-points = MicroVectorProblem(; model, points = [(-89.40, 43.07)], dates, soil_profile)
-grid = MicroRasterProblem(; model, area, template = SRTM, dates, soil_profile)
+points = MicroVectorProblem(; model, points = [(-89.40, 43.07)], dates)
+grid = MicroRasterProblem(; model, area, template = SRTM, dates)
 solve(points), solve(grid)
 ```
 

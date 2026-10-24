@@ -44,8 +44,8 @@ ZarrDatasets = "519a4cdf-1362-424a-9ea1-b1d782dbb24b"
 [sources]
 BiophysicalGeometry = {rev = "main", url = "https://github.com/BiophysicalEcology/BiophysicalGeometry.jl"}
 FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
-HeatExchange = {rev = "main", url = "https://github.com/BiophysicalEcology/HeatExchange.jl"}
-Microclimate = {rev = "canopy", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
+HeatExchange = {rev = "transient-model", url = "https://github.com/BiophysicalEcology/HeatExchange.jl"}
+Microclimate = {rev = "micromodel-tree", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
 PointDataSources = {rev = "main", url = "https://github.com/BiophysicalEcology/PointDataSources.jl"}
 RasterDataSources = {rev = "franken-seas5", url = "https://github.com/mrke/RasterDataSources.jl"}
 Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}

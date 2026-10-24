@@ -32,7 +32,7 @@ field) or any `Extents.Extent` directly.
 ```julia
 site     = geocode("Alice Springs, Australia"; buffer = 0.1)
 template = load_template(SRTM, site)
-prob     = MicroRasterProblem(model; area = site.extent, template, dates, soil_profile)
+prob     = MicroRasterProblem(model; area = site.extent, template, dates)
 ```
 """
 load_template(source, site::GeocodeResult) = load_template(source, site.extent)
@@ -58,12 +58,12 @@ with `MicroRasterProblem`.
 ```julia
 # Vector run — single point
 site = geocode("Alice Springs, Australia")
-prob = MicroVectorProblem(model; points = [site], dates, soil_profile)
+prob = MicroVectorProblem(model; points = [site], dates)
 
 # Raster run — natural bbox + 0.1° buffer
 site     = geocode("Alice Springs, Australia"; buffer = 0.1)
 template = load_template(SRTM, site)
-prob     = MicroRasterProblem(model; area = site.extent, template, dates, soil_profile)
+prob     = MicroRasterProblem(model; area = site.extent, template, dates)
 ```
 """
 function geocode(place_name::AbstractString; buffer::Real = 0.0)

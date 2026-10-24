@@ -17,10 +17,10 @@ using Microclimate: example_soil_profile, example_soil_properties_model, example
 
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 heights = [0.01, 1.2]u"m"
-micro_model = MicroModel(; depths, heights,
-    soil_properties_model = example_soil_properties_model(),
-    soil_hydraulic_model = example_soil_hydraulic_model(),
-    snow_model = SnowModel())
+soil = SoilModel(; depths, profile = example_soil_profile(depths),
+    properties_model = example_soil_properties_model(),
+    hydraulic_model = example_soil_hydraulic_model())
+micro_model = MicroModel(; site = nothing, soil, atmosphere = AtmosphereModel(; heights), snow = SnowModel())
 model = MicroMapModel(; micro_model, dem_source = SRTM, weather_source = CRUCL2,
     soil_moisture_source = CPCSoil, surface_albedo_source = 0.15, roughness_height_source = 0.004u"m")
 year = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
@@ -35,21 +35,14 @@ drives Madison with `example_monthly_weather()`, the CRU CL 2.0 normals for the 
 normals are read from the data set:
 
 ```@example points
-madison = solve(MicroVectorProblem(; model, points = [(-89.40123, 43.07305)], dates = year,
-    soil_profile = example_soil_profile(depths), init = start))
+madison = solve(MicroVectorProblem(; model, points = [(-89.40123, 43.07305)], dates = year, init = start))
 nothing # hide
 ```
 
 and the run of that tutorial, for comparison:
 
 ```@example points
-reference = let model = MicroModel(; soil_properties_model = example_soil_properties_model(),
-                                     soil_hydraulic_model = example_soil_hydraulic_model())
-    solve(MicroProblem(model, MicroInputs(; site = example_site(), soil_profile = example_soil_profile(),
-        environment_minmax = example_monthly_weather(), environment_daily = example_daily_environment(),
-        environment_hourly = example_hourly_environment(), initial_soil_temperature = nothing,
-        initial_soil_moisture = fill(0.42 * 0.25, length(model.depths)))))
-end
+reference = solve(Microclimate.example_microclimate_problem(; initial_soil_temperature = nothing))
 fig = Figure(size = (800, 360)) # hide
 for (k, (d_here, d_ref, label)) in enumerate(((1, 1, "surface"), (7, 13, "30 cm"))) # hide
     ax = Axis(fig[1, k]; title = label, xlabel = "Hour of the 12 representative days", ylabel = k == 1 ? "Soil temperature (°C)" : "") # hide
@@ -86,8 +79,7 @@ moves between the surface and a burrow. What it has to choose from, on the repre
 July:
 
 ```@example points
-palm_springs = solve(MicroVectorProblem(; model, points = [(-116.545, 33.830)], dates = year,
-    soil_profile = example_soil_profile(depths), init = start))
+palm_springs = solve(MicroVectorProblem(; model, points = [(-116.545, 33.830)], dates = year, init = start))
 fig = Figure(size = (800, 320)) # hide
 for (k, (m, name)) in enumerate(((1, "January"), (7, "July"))) # hide
     ax = Axis(fig[1, k]; title = name, xlabel = "Hour", ylabel = k == 1 ? "Soil temperature (°C)" : "") # hide
@@ -110,8 +102,7 @@ summit. They share one cell of the weather data, so their differences come from 
 
 ```@example points
 aigoual = solve(MicroVectorProblem(; model,
-    points = [(3.520, 44.143), (3.582, 44.115), (3.581, 44.122)], dates = year,
-    soil_profile = example_soil_profile(depths), init = start))
+    points = [(3.520, 44.143), (3.582, 44.115), (3.581, 44.122)], dates = year, init = start))
 names = ["Valley", "South slope", "Summit"] # hide
 fig = Figure(size = (800, 320)) # hide
 ax = Axis(fig[1, 1]; xlabel = "Hour of the 12 representative days", ylabel = "Snow depth (cm)") # hide

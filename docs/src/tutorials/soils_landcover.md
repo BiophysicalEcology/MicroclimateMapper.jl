@@ -20,7 +20,7 @@ using MicroclimateMapper, Microclimate, RasterDataSources, Unitful
 
 depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
 melbourne = build_soil_profile(SLGA, (144.96, -37.81); depths, pedotransfer_model = CosbyMultivariate())
-melbourne.soil_profile    # for a problem's `soil_profile`
+melbourne.soil_profile    # for the `profile` of a `SoilModel`
 melbourne.campbell_b      # Campbell's b at each depth, also folded into the profile
 ```
 

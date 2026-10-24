@@ -17,3 +17,9 @@ function variables(::Type{<:GRIDMET})
         Variable(WindSpeed(), :vs, u"m/s"),
     )
 end
+
+# NetCDF variable names in gridMET's files
+file_variable(::Type{<:GRIDMET}, name::Symbol) = get((
+    tmmx = :air_temperature, tmmn = :air_temperature, pr = :precipitation_amount,
+    rmin = :relative_humidity, rmax = :relative_humidity, srad = :surface_downwelling_shortwave_flux_in_air,
+    vs = :wind_speed, elev = :elevation), name, name)

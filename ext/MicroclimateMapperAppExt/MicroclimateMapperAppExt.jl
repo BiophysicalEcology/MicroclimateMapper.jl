@@ -111,11 +111,13 @@ const CACHE_LOCK = ReentrantLock()   # the caches are shared by the data sets so
 function solve_point(c::Choice, s::Settings)
     hit = lock(() -> get(RESULTS, (c.code, s), nothing), CACHE_LOCK)
     hit === nothing || return hit
-    micro_model = MicroModel(; depths = DEPTHS, heights = HEIGHTS,
-        soil_properties_model = example_soil_properties_model(),
-        soil_hydraulic_model = example_soil_hydraulic_model(),
-        snow_model = s.snow ? SnowModel() : NoSnow(),
-        config = MicroConfig(; soil_moisture_strategy = s.dynamic_moisture ? DynamicSoilMoisture() : PrescribedSoilMoisture()))
+    soil = SoilModel(; depths = DEPTHS, profile = soil_profile(s),
+        properties_model = example_soil_properties_model(),
+        hydraulic_model = example_soil_hydraulic_model(),
+        moisture_strategy = s.dynamic_moisture ? DynamicSoilMoisture() : PrescribedSoilMoisture())
+    micro_model = MicroModel(; site = nothing, soil,
+        atmosphere = AtmosphereModel(; heights = HEIGHTS),
+        snow = s.snow ? SnowModel() : NoSnow())
     model = MicroMapModel(; micro_model, dem_source = dem_source(s), weather_source = c.source,
         soil_moisture_source = c.source === TerraClimate{Historical} ? nothing : CPCSoil,
         surface_albedo_source = s.albedo, roughness_height_source = 0.004u"m",
@@ -124,7 +126,7 @@ function solve_point(c::Choice, s::Settings)
     start = s.snow ? (; soil_moisture = fill(0.2, length(DEPTHS)), snow_depth = 0.0u"cm") :
                      (; soil_moisture = fill(0.2, length(DEPTHS)))
     problem(data) = MicroVectorProblem(; model, points = [(s.lon, s.lat)], dates = dates_for(c, s),
-        soil_profile = soil_profile(s), init = start, data)
+        init = start, data)
     key = (s.lon, s.lat, s.terrain)
     known = lock(() -> get(TERRAIN, key, nothing), CACHE_LOCK)
     cache = nothing
@@ -172,7 +174,7 @@ function terrain_lines(s::Settings)
         "t.slope .= $(s.slope)u\"°\"",
         "t.aspect .= $(s.aspect)u\"°\"   # clockwise from north",
         "t.horizon_angles .= Ref(MicroclimateMapper.SVector{32}(fill($(s.horizon)u\"°\", 32)))   # in every direction",
-        "problem = MicroVectorProblem(; problem.model, problem.points, problem.dates, problem.soil_profile,",
+        "problem = MicroVectorProblem(; problem.model, problem.points, problem.dates,",
         "    problem.init, data = (; problem.data..., terrain = t))",
     ]
     return join(lines, "
@@ -204,18 +206,20 @@ function script(choices::Vector{Choice}, s::Settings)
     point = ($(round(s.lon; digits = 4)), $(round(s.lat; digits = 4)))   # longitude, latitude
     depths = [0.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 50.0, 100.0, 200.0]u"cm"
     heights = [0.01, 0.05, 0.10, 0.30, 0.50, 1.0, 2.0]u"m"   # the top one is the reference height
-    micro_model = MicroModel(; depths, heights,
-        soil_properties_model = example_soil_properties_model(),
-        soil_hydraulic_model = example_soil_hydraulic_model(),
-        snow_model = $(s.snow ? "SnowModel()" : "NoSnow()"),
-        config = MicroConfig(; soil_moisture_strategy = $(s.dynamic_moisture ? "DynamicSoilMoisture()" : "PrescribedSoilMoisture()")))
+    soil = SoilModel(; depths, profile = $soil,
+        properties_model = example_soil_properties_model(),
+        hydraulic_model = example_soil_hydraulic_model(),
+        moisture_strategy = $(s.dynamic_moisture ? "DynamicSoilMoisture()" : "PrescribedSoilMoisture()"))
+    micro_model = MicroModel(; site = nothing,   # each point's site comes from its terrain
+        soil, atmosphere = AtmosphereModel(; heights),
+        snow = $(s.snow ? "SnowModel()" : "NoSnow()"))
 
     # A climatology (CRUCL2, WorldClim) solves 12 representative days whatever year its dates are in.
     function run_with(source, dates; soil_moisture_source = CPCSoil)
         problem = MicroVectorProblem(;
             model = MicroMapModel(; micro_model, dem_source = $(s.terrain ? "SRTM" : "CRUCL2"), weather_source = source, soil_moisture_source,
                 surface_albedo_source = $(s.albedo), roughness_height_source = 0.004u"m", compute_terrain = $(s.terrain)),
-            points = [point], dates, soil_profile = $soil,
+            points = [point], dates,
             init = $(s.snow ? "(; soil_moisture = fill(0.2, length(depths)), snow_depth = 0.0u\"cm\")" : "(; soil_moisture = fill(0.2, length(depths)))"),
             data = (; shade = $(s.shade)))
         $(terrain_lines(s))

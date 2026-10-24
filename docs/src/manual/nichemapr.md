@@ -34,15 +34,15 @@ new data-set type and about twenty lines here, see
 | `loc` | `points` of a [`MicroVectorProblem`](@ref), or [`geocode`](@ref) for a place name |
 | `dstart`, `dfinish`, `ystart`, `yfinish`, `nyears` | `dates`, any range of `Date`s |
 | `timeinterval` | set by the data set: 12 representative days for a monthly source, every day for a daily one |
-| `DEP` | `depths` of the `MicroModel`, any number, with units |
-| `Usrhyt` | `heights` of the `MicroModel`, any number, with units |
+| `DEP` | `depths` of the `MicroModel`'s `SoilModel`, any number, with units |
+| `Usrhyt` | `heights` of the `MicroModel`'s `AtmosphereModel`, any number, with units |
 | `REFL` | `surface_albedo_source`: a number, a raster, a data set, or land-cover classes |
 | `RUF` | `roughness_height_source`, in the same forms |
 | `slope`, `aspect`, `hori` | computed from `dem_source` for each point or cell |
 | `elev` | from `dem_source`, or `data = (; dem = raster)` |
 | `soilgrids = 1` | [`build_soil_profile`](@ref)`(SoilGrids, point)` |
-| `runmoist` | the `soil_moisture_strategy` of the `MicroModel`'s configuration |
-| `snowmodel` | `snow_model = SnowModel()` or `NoSnow()` |
+| `runmoist` | the `moisture_strategy` of the `MicroModel`'s `SoilModel` |
+| `snowmodel` | `snow = SnowModel()` or `NoSnow()` on the `MicroModel` |
 | `run.gads` | the aerosol model, see [Terrain and atmosphere](terrain.md) |
 | `lapse_max`, `lapse_min` | `lapse_rate_model` of the [`MicroMapModel`](@ref) |
 | `minshade`, `maxshade` | a shade value, or a multilayer canopy, see Microclimate.jl's [Canopy](https://biophysicalecology.github.io/Microclimate.jl/dev/manual/canopy) |
