@@ -1140,8 +1140,12 @@ _environment_hourly(out) = HourlyTimeseries(;
     out.rainfall, out.zenith_angle,
 )
 
-_environment_hourly_stub(n) = HourlyTimeseries(;
-    pressure = Fill(atmospheric_pressure(0.0u"m"), n * 24),
+# Hourly pressure slot: filled from daily sea-level pressure when the source has it
+_hourly_pressure_slot(::Nothing, n) = Fill(atmospheric_pressure(0.0u"m"), n * 24)
+_hourly_pressure_slot(::Variable, n) = zeros(typeof(1.0u"Pa"), n * 24)
+
+_environment_hourly_stub(n, pressure = _hourly_pressure_slot(nothing, n)) = HourlyTimeseries(;
+    pressure,
     reference_temperature = nothing, reference_humidity = nothing,
     reference_wind_speed = nothing, global_radiation = nothing,
     longwave_radiation = nothing, cloud_cover = nothing,
@@ -1236,7 +1240,8 @@ function _allocate_weather_buffers(calendar::Calendar, ::MinMax, ::Timestep, sou
     environment_minmax = _minmax_env_type(calendar)(; forcings)
     shade = zeros(Float64, nsteps)
     environment_daily = _environment_daily(nsteps, b.rainfall, b.deep_soil_temperature, shade)
-    environment_hourly = _environment_hourly_stub(nsteps)
+    environment_hourly = _environment_hourly_stub(nsteps,
+        _hourly_pressure_slot(_maybe_variable(vars, :sea_level_pressure), nsteps))
 
     return (; b..., shade, days_of_year,
         environment_minmax, environment_daily, environment_hourly)
@@ -1292,7 +1297,7 @@ function assemble_weather!(
                canonical_overrides, I)
     _apply_canonical_overrides!(buffers, canonical_overrides, I)
 
-    environment_hourly = _finalize_environment_hourly(buffers, vars, atm_pressure)
+    environment_hourly = _finalize_environment_hourly(buffers, vars, site)
 
     return (; buffers.environment_minmax, buffers.environment_daily, environment_hourly)
 end
@@ -1323,11 +1328,21 @@ function _assemble!(native_step::SubDaily, target_step::SubDaily, buffers, weath
 end
 
 # TODO: this is a hack just to fill pressure.
-@inline function _finalize_environment_hourly(buffers, variables, atm_pressure)
+@inline function _finalize_environment_hourly(buffers, variables, site)
     buffers.environment_minmax === nothing && return buffers.environment_hourly
     _has_native(Val(:pressure), variables)  && return buffers.environment_hourly
-    pressure = Fill(atm_pressure, length(buffers.environment_hourly.pressure))
+    _has_native(Val(:sea_level_pressure), variables) && return _site_pressure_from_daily!(buffers, site.elevation)
+    pressure = Fill(atmospheric_pressure(site.elevation), length(buffers.environment_hourly.pressure))
     return setproperties(buffers.environment_hourly, (; pressure))
+end
+
+# Each hour gets its day's sea-level pressure, reduced to the site elevation
+function _site_pressure_from_daily!(buffers, elevation)
+    pressure = buffers.environment_hourly.pressure
+    @inbounds for k in eachindex(pressure)
+        pressure[k] = atmospheric_pressure(elevation; reference_pressure = buffers.sea_level_pressure[cld(k, 24)])
+    end
+    return buffers.environment_hourly
 end
 
 @inline function _read_native!(buffers, weather, variables::Tuple, I)
