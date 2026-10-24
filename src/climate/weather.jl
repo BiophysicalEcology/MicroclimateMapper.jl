@@ -249,6 +249,19 @@ function _check_ti_length(source::Type, stack::RasterStack, years)
         "$(nameof(typeof(native))), $(length(years)) years)")
 end
 
+# `_check_ti_length` lets a trailing partial year through, but the run's dates
+# can still reach past the last loaded step -- say where the data ends, rather
+# than leaving the Ti slice to throw a BoundsError.
+function _check_weather_covers(source::Type, stack::RasterStack, years, ti_end::Int)
+    n = length(dims(_first_ti_layer(stack), Ti))
+    n >= ti_end && return nothing
+    available = weather_calendar(source) isa Daily ?
+        "only available to $(Date(first(years), 1, 1) + Day(n ÷ samples_per_day(native_timestep(source)) - 1))" :
+        "only $n of the $ti_end time steps needed are available"
+    error("$(nameof(source)): weather data is $available -- end the run dates on or before then " *
+        "(recent data may not be published yet)")
+end
+
 function _load_weather_points(source::Type, points_dim, years)
     primary_stack = _load_canonical_points(source, layers(source), points_dim, years)
     baseline = fallback_source(source)
