@@ -129,6 +129,8 @@ end
 # source cells beyond the template extent in every direction.
 weather_area_buffer(::Type{<:RasterDataSources.RasterDataSource}) = 0.5
 weather_area_buffer(::Type{<:NCEP}) = 4.0
+# SEAS5 is 1°: two cells each side, as NCEP gets for its ~1.9° grid.
+weather_area_buffer(::Type{<:SEAS5Forecast}) = 2.0
 
 # Resample every layer of a 3-D `(X, Y, Ti)` weather stack onto a 2-D
 # `(X, Y)` template — used when the run grid is finer than the native
@@ -213,6 +215,7 @@ function CommonSolve.init(problem::MicroRasterProblem)
 
     # Normalise the user-supplied dates to a sorted Vector{Date}.
     dates_vec = _normalise_dates(dates)
+    _check_weather_dates(weather_source, dates_vec)
     years = _years_from_dates(dates)
     calendar = weather_calendar(weather_source)
     native = native_timestep(weather_source)

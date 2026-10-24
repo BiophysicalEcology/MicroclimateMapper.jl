@@ -8,4 +8,5 @@ using Test
     @testset "micro vector"   begin include("micro_vector.jl") end
     @testset "soil pedotransfer" begin include("soil_pedotransfer.jl") end
     @testset "era5ecmwf"      begin include("era5ecmwf.jl") end
+    @testset "seas5"          begin include("seas5.jl") end
 end
