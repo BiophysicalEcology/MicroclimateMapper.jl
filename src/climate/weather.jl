@@ -292,7 +292,7 @@ function _load_layers(::YearlyTimeSeries, source, fields::Tuple, area::Extent, y
         per_year = map(years) do yr
             @info "  loading $source $name $yr..."
             path = getraster(source, name; date = Date(yr), extras...)
-            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name = file_variable(source, name), lazy = true); to = area, touches = true))
         end
         cat(per_year...; dims = Ti)
     end
@@ -305,7 +305,7 @@ function _load_layers(::MonthlyTimeSeries, source, fields::Tuple, area::Extent, 
         per_month = map(dates) do d
             @info "  loading $source $name $(year(d))-$(month(d))..."
             path = getraster(source, name; date = d, extras...)
-            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name = file_variable(source, name), lazy = true); to = area, touches = true))
         end
         cat(per_month...; dims = Ti)
     end
@@ -339,7 +339,7 @@ function _load_layers(::MultiBandClimatologyPeriod, source, fields::Tuple,
     layers = map(fields) do name
         @info "  loading $source $name ($period_date)..."
         path = getraster(source, name; date = period_date)
-        full = read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+        full = read(crop(Raster(path; name = file_variable(source, name), lazy = true); to = area, touches = true))
         # File holds 12 months along the 3rd dim (Band or Ti, depending on
         # the format). Pull out the data array, tile across years, and re-
         # wrap with a proper `Ti` axis.
@@ -385,7 +385,7 @@ function _load_layers(::DailyFiles, source, fields::Tuple, area::Extent, years)
         @info "  loading $source $name ($nsteps daily files, $(first(dates)) to $(last(dates)))..."
         per_day = map(dates) do d
             path = getraster(source, name; date = d, extras...)
-            read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+            read(crop(Raster(path; name = file_variable(source, name), lazy = true); to = area, touches = true))
         end
         first_day = first(per_day)
         spatial_dims = dims(first_day)
@@ -511,8 +511,15 @@ _prefetch_path(dir, fields, area, b0, b1) = joinpath(dir,
     "$(round(area.Y[1]; digits = 2))_$(round(area.Y[2]; digits = 2))_" *
     "$(Dates.format(b0, "yyyymmdd"))_$(Dates.format(b1, "yyyymmdd")).nc")
 
+"""
+    file_variable(source, name)
+
+NetCDF variable holding layer `name` in `source`'s files; the layer name unless the source says otherwise.
+"""
+file_variable(source, name) = name
+
 function _load_field_at_points(source, name, points_dim; kw...)
-    lazy_r = Raster(source, name; lazy = true, kw...)
+    lazy_r = Raster(getraster(source, name; kw...); name = file_variable(source, name), lazy = true)
     return _extract_lazy_at_points(lazy_r, points_dim)
 end
 
@@ -764,7 +771,7 @@ function _load_static(::Loader, source, fields::Tuple, area::Extent)
     layers = map(fields) do name
         @info "  loading $source $name (static)..."
         path = getraster(source, name)
-        read(crop(Raster(path; name, lazy = true); to = area, touches = true))
+        read(crop(Raster(path; name = file_variable(source, name), lazy = true); to = area, touches = true))
     end
     return NamedTuple{fields}(layers)
 end
