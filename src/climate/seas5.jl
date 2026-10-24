@@ -56,16 +56,24 @@ function variables(::Type{<:SEAS5Forecast})
         Variable(Temperature(Minimum()), :mn2t24, u"K"),
         Variable(DewpointTemperature(), :d2m, u"K"),
         Variable(WindSpeed(), :ws10, u"m/s"),
+        Variable(CloudCover(), :tcc, 1),
+        Variable(CloudCover(Minimum()), :tcc_min, 1),
+        Variable(CloudCover(Maximum()), :tcc_max, 1),
+        Variable(SeaLevelPressure(), :msl, u"Pa"),
         Variable(GlobalRadiation(), :ssrd, u"J/m^2/d"),
         # `:tp` is metres of water per day; × 1000 → kg/m².
         Variable(Rainfall(), :tp, u"kg/m^2", raw -> raw * 1000.0),
+        Variable(Elevation(), :orog, u"m"),
     )
 end
 
 # Native fields are daily series built from one or more CDS variables:
 # `cds` are the variables requested, at `leadtime` hours, and `daily` turns
 # their (lon, lat, lead) arrays into one (lon, lat, day) array.
-_daily_mean(x) = dropdims(mean(reshape(x, size(x, 1), size(x, 2), 4, :); dims = 3); dims = 3)
+_daily(f, x) = dropdims(f(reshape(x, size(x, 1), size(x, 2), 4, :); dims = 3); dims = 3)
+_daily_mean(x) = _daily(mean, x)
+_daily_min(x) = _daily(minimum, x)
+_daily_max(x) = _daily(maximum, x)
 # Accumulated from the forecast start; negative steps are packing noise.
 _daily_accumulation(x) = max.(diff(cat(zeros(size(x, 1), size(x, 2), 1), x; dims = 3); dims = 3), 0.0)
 
@@ -73,10 +81,13 @@ const _SEAS5_FIELDS = (
     mx2t24 = (cds = ("maximum_2m_temperature_in_the_last_24_hours",), leadtime = _SEAS5_DAILY_LEADS, daily = identity),
     mn2t24 = (cds = ("minimum_2m_temperature_in_the_last_24_hours",), leadtime = _SEAS5_DAILY_LEADS, daily = identity),
     d2m = (cds = ("2m_dewpoint_temperature",), leadtime = _SEAS5_6HOURLY_LEADS, daily = _daily_mean),
-    # Mean of the 6-hourly speeds, not the speed of the mean wind vector,
-    # which shrinks whenever the direction changes during the day.
+    # Largest 6-hourly speed: the daily maximum the envelope path expects
     ws10 = (cds = ("10m_u_component_of_wind", "10m_v_component_of_wind"), leadtime = _SEAS5_6HOURLY_LEADS,
-        daily = (u, v) -> _daily_mean(sqrt.(u .^ 2 .+ v .^ 2))),
+        daily = (u, v) -> _daily_max(sqrt.(u .^ 2 .+ v .^ 2))),
+    tcc = (cds = ("total_cloud_cover",), leadtime = _SEAS5_6HOURLY_LEADS, daily = _daily_mean),
+    tcc_min = (cds = ("total_cloud_cover",), leadtime = _SEAS5_6HOURLY_LEADS, daily = _daily_min),
+    tcc_max = (cds = ("total_cloud_cover",), leadtime = _SEAS5_6HOURLY_LEADS, daily = _daily_max),
+    msl = (cds = ("mean_sea_level_pressure",), leadtime = _SEAS5_6HOURLY_LEADS, daily = _daily_mean),
     ssrd = (cds = ("surface_solar_radiation_downwards",), leadtime = _SEAS5_DAILY_LEADS, daily = _daily_accumulation),
     tp = (cds = ("total_precipitation",), leadtime = _SEAS5_DAILY_LEADS, daily = _daily_accumulation),
 )
@@ -128,7 +139,7 @@ function _seas5_read(path, member::Int, nlead::Int)
             "SEAS5 file $path has dimensions $(Tuple(rest)) of size $(size(data)), " *
             "expected $nlead lead times")
         values = reshape(Float64[ismissing(x) ? NaN : x for x in data], length(lons), length(lats), nlead)
-        return (; lons, lats, values)
+        return (; lons, lats, values, units = get(var.attrib, "units", ""))
     end
 end
 
@@ -157,6 +168,20 @@ function _load_layers(::SingleForecast, source, fields::Tuple, area::Extent, yea
             1 <= i <= length(dates) && (out[:, :, i] .= view(daily, :, :, k))
         end
         Raster(out, (X(lons), Y(lats), Ti(1:length(dates))); crs = EPSG(4326), name = f)
+    end
+    return NamedTuple{fields}(layers)
+end
+
+# Grid elevation from SEAS5's orography, served as geopotential at lead time 0
+_load_static(::SingleForecast, _source, ::Tuple{}, _area::Extent) = NamedTuple()
+function _load_static(::SingleForecast, source, fields::Tuple, area::Extent)
+    extent = _seas5_request_extent(area)
+    layers = map(fields) do f
+        path = getraster(RasterDataSources.SEAS5, "orography"; date = _seas5_init(source), extent, leadtime = 0)
+        (; lons, lats, values, units) = _seas5_read(path, _seas5_member(source), 1)
+        geopotential = occursin("s**-2", units) || occursin("s-2", units)
+        elevation = geopotential ? values[:, :, 1] ./ ustrip(u"m/s^2", Unitful.gn) : values[:, :, 1]
+        Raster(elevation, (X(lons), Y(lats)); crs = EPSG(4326), name = f)
     end
     return NamedTuple{fields}(layers)
 end
