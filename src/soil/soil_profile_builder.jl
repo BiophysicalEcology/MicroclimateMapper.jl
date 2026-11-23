@@ -35,6 +35,7 @@ function _assemble_soil_profile(native::NamedTuple;
         mineral_density = 2.560u"Mg/m^3",
         mineral_conductivity = 1.25u"W/m/K",
         mineral_heat_capacity = 870.0u"J/kg/K",
+        de_vries_shape_factor = 0.1,
         root_density = nothing)
     _warn_if_texture_incomplete(native.clay, native.silt, native.sand)
 
@@ -60,6 +61,7 @@ function _assemble_soil_profile(native::NamedTuple;
         mineral_density = _broadcast_over_depths(mineral_density, depths),
         mineral_conductivity = _broadcast_over_depths(mineral_conductivity, depths),
         mineral_heat_capacity = _broadcast_over_depths(mineral_heat_capacity, depths),
+        de_vries_shape_factor = _broadcast_over_depths(de_vries_shape_factor, depths),
         hydraulics = CampbellHydraulicProfile(;
             air_entry_water_potential = air_entry_potential,
             saturated_hydraulic_conductivity = saturated_conductivity,
@@ -73,7 +75,7 @@ end
 """
     build_soil_profile(source, area_or_point; depths, pedotransfer_model,
                        mineral_density, mineral_conductivity, mineral_heat_capacity,
-                       root_density, quantile, component)
+                       de_vries_shape_factor, root_density, quantile, component)
         -> (; soil_profile, campbell_b, air_entry_potential, saturated_conductivity,
               field_capacity, wilting_point)
 
@@ -82,7 +84,7 @@ Fetch soil texture for `source` (`SoilGrids` or `SLGA`) over `area_or_point`
 for a point query, buffered into a small `Extent`), interpolate onto `depths`, run
 `pedotransfer_model`, and assemble a `SoilProfile`.
 
-`mineral_density`/`mineral_conductivity`/`mineral_heat_capacity`/`root_density`
+`mineral_density`/`mineral_conductivity`/`mineral_heat_capacity`/`de_vries_shape_factor`/`root_density`
 aren't produced by pedotransfer; `root_density` defaults to
 `Microclimate.example_campbell_hydraulic_profile`'s table, re-interpolated
 onto `depths` if needed. `campbell_b`/`air_entry_potential`/

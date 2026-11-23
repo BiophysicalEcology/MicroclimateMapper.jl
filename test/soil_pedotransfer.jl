@@ -54,3 +54,12 @@ end
         end
     end
 end
+
+@testset "soil profile from texture" begin
+    depths = [0.0, 5.0, 10.0, 50.0, 200.0]u"cm"
+    native = (; clay = fill(20.0, 6), silt = fill(30.0, 6), sand = fill(50.0, 6),
+        bulk_density = fill(1.3u"Mg/m^3", 6))
+    result = MicroclimateMapper._assemble_soil_profile(native; depths, de_vries_shape_factor = 0.2)
+    @test result.soil_profile.de_vries_shape_factor == fill(0.2, length(depths))
+    @test length(result.campbell_b) == length(depths)
+end
