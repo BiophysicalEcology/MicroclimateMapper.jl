@@ -23,16 +23,13 @@ using PointDataSources
 using NCDatasets       # triggers Rasters NCDatasets extension for NetCDF support
 using ArchGDAL         # triggers Rasters ArchGDAL extension for GeoTIFF support
 using Proj             # triggers RasterDataSources Proj extension for SoilGrids tile selection
-# ZarrDatasets activates Rasters' Zarr extension for ARCO-ERA5 — currently
-# blocked by a JSON version conflict with the user's dev RasterDataSources
-# checkout. Until that's resolved, users running ERA5 should add
-# `using ZarrDatasets` themselves in their script.
+# ERA5 ARCO stores are read by MicroclimateMapperZarrExt, after `using Zarr`.
 using Rasters
 using Rasters: X, Y, Ti, Near, Between, lookup, setcrs, crs
 using Rasters.Lookups: Intervals, Center, Sampled, Regular, Irregular,
     ForwardOrdered, ReverseOrdered, span, order, sampling
 using Rasters.DimensionalData: Dim, DimArray, MergedLookup, hasdim, At, dims, otherdims
-using Rasters.DimensionalData: unrolled_map, basetypeof
+using Rasters.DimensionalData: unrolled_map, basetypeof, dimnum, rebuild
 using Rasters.Extents
 using Rasters.Extents: Extent
 using Geomorphometry

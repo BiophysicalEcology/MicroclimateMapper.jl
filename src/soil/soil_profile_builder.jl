@@ -75,7 +75,7 @@ end
 """
     build_soil_profile(source, area_or_point; depths, pedotransfer_model,
                        mineral_density, mineral_conductivity, mineral_heat_capacity,
-                       de_vries_shape_factor, root_density, quantile, component)
+                       de_vries_shape_factor, root_density, component)
         -> (; soil_profile, campbell_b, air_entry_potential, saturated_conductivity,
               field_capacity, wilting_point)
 
@@ -92,14 +92,14 @@ onto `depths` if needed. `campbell_b`/`air_entry_potential`/
 into `soil_profile.hydraulics`) and `field_capacity`/
 `wilting_point` are also returned directly, for reference.
 """
-function build_soil_profile(::Type{SoilGrids}, area::Extent; quantile = "mean", kw...)
-    native = _load_soil_texture_native(SoilGrids, area; quantile)
+function build_soil_profile(::Type{SoilGrids}, area::Extent; component = "mean", kw...)
+    native = _load_soil_texture_native(SoilGrids, area; component)
     return _assemble_soil_profile(native; kw...)
 end
 
-function build_soil_profile(::Type{SoilGrids}, point::Tuple{<:Real, <:Real}; quantile = "mean", kw...)
+function build_soil_profile(::Type{SoilGrids}, point::Tuple{<:Real, <:Real}; component = "mean", kw...)
     lon, lat = point
-    native = _load_soil_texture_native(SoilGrids, lon, lat; quantile)
+    native = _load_soil_texture_native(SoilGrids, lon, lat; component)
     return _assemble_soil_profile(native; kw...)
 end
 

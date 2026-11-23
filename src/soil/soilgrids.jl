@@ -53,11 +53,11 @@ function _texture_values_from_paths(depth_tile_paths, area::Extent, var::Texture
     end
 end
 
-function _load_soil_texture_native(::Type{SoilGrids}, area::Extent; quantile = "mean")
+function _load_soil_texture_native(::Type{SoilGrids}, area::Extent; component = "mean")
     vars = texture_variables(SoilGrids)
-    depth_bins = collect(depths(SoilGrids))  # getraster's depth::AbstractArray dispatch needs a Vector, not a Tuple
+    depth_bins = collect(RasterDataSources.depths(SoilGrids))  # getraster's depth::AbstractArray dispatch needs a Vector, not a Tuple
     values = map(vars) do var
-        paths = getraster(SoilGrids, native_field(var); extent = area, depth = depth_bins, quantile)
+        paths = getraster(SoilGrids, native_field(var); extent = area, depth = depth_bins, component)
         _texture_values_from_paths(paths, area, var)
     end
     return NamedTuple{map(canonical_name, vars)}(values)
@@ -67,10 +67,10 @@ end
 # Shared with SLGA's point method in slga.jl -- bigger than one pixel for either source.
 const _SOIL_POINT_BUFFER_DEG = 0.005  # ~550 m at the equator
 
-function _load_soil_texture_native(::Type{SoilGrids}, lon::Real, lat::Real; quantile = "mean")
+function _load_soil_texture_native(::Type{SoilGrids}, lon::Real, lat::Real; component = "mean")
     area = Extent(
         X = (lon - _SOIL_POINT_BUFFER_DEG, lon + _SOIL_POINT_BUFFER_DEG),
         Y = (lat - _SOIL_POINT_BUFFER_DEG, lat + _SOIL_POINT_BUFFER_DEG),
     )
-    return _load_soil_texture_native(SoilGrids, area; quantile)
+    return _load_soil_texture_native(SoilGrids, area; component)
 end

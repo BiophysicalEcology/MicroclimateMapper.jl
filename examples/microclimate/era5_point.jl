@@ -10,13 +10,30 @@
 
 using MicroclimateMapper
 using Microclimate: example_microclimate_problem
+using RasterDataSources
 using Rasters
 using Unitful
 using Dates
+using Zarr  # reads ERA5's ARCO Zarr stores
 using GeoInterface: Wrappers as GIW
 
 point = GIW.Point((-89.4557, 43.1379))
 dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
+
+# ---------------------------------------------------------------------------
+# Choose an ERA5 source
+# ---------------------------------------------------------------------------
+# - `ERA5{ECMWF,ARCO}`: ECMWF's Zarr store, chunked for long series at a
+#   point: fast, no queue.
+# - `ERA5{ECMWF,ARCO,Land}`: ERA5-Land at 0.1°, with cloud cover from ERA5.
+# - `ERA5{ECMWF,OnDemand}` and `ERA5{ECMWF,OnDemand,Land}`: monthly NetCDF
+#   downloads from the Climate Data Store, queued, so slower.
+# - `ERA5`: Google's public store, no account, but chunked by hour over the
+#   whole globe, so slow for a long series at a point.
+#
+# ECMWF sources need a CDS token:
+# ENV["RASTERDATASOURCES_ERA5_CDS_TOKEN"] = "your token"
+weather_source = ERA5{ECMWF,ARCO}
 
 # ---------------------------------------------------------------------------
 # Build the model
@@ -28,17 +45,17 @@ inner = example_microclimate_problem().model
 model = MicroMapModel(;
     micro_model = inner,
     dem_source = SRTM,
-    weather_source = ERA5,
+    weather_source,
+    surface_albedo_source = 0.15,
+    roughness_height_source = 0.004u"m",
 )
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-# `using ZarrDatasets` is required at the top-level script to activate the
-# Rasters Zarr backend for the ARCO-ERA5 store. Once the JSON version
-# conflict between RasterDataSources/dev and ZarrDatasets is resolved this
-# can become a direct dependency.
-problem = MicroVectorProblem(; model, points = [point], dates)
+# ERA5 has no soil moisture here, so start from a uniform profile.
+init = (; soil_moisture = fill(0.2, length(inner.soil.depths)))
+problem = MicroVectorProblem(; model, points = [point], dates, init)
 output = solve(problem)
 
 @show size(output.soil_temperature)

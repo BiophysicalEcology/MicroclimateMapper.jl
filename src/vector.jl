@@ -214,8 +214,8 @@ function CommonSolve.init(problem::MicroVectorProblem)
     # unless the user already supplied data.soil_moisture explicitly.
     # Skipped in solar-only mode — weather is not loaded (or is irrelevant).
     if !model.solar_only && soil_moisture_source !== nothing && !haskey(data, :soil_moisture)
-        sm_area = Extents.buffer(_points_extent(points),
-            (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+        sm_buffer = points_load_buffer(soil_moisture_source)
+        sm_area = Extents.buffer(_points_extent(points), (X = sm_buffer, Y = sm_buffer))
         data = merge(data, (; soil_moisture = _load_prescribed(soil_moisture_source, SoilMoisture(), sm_area, years)))
     end
 
@@ -266,8 +266,8 @@ function CommonSolve.init(problem::MicroVectorProblem)
         weather_native = _load_weather_points(weather_source, points_dim, years)
         weather_native[Ti(ti_start:ti_end)]
     else
-        weather_area = Extents.buffer(area,
-            (X = _POINTS_LOAD_BUFFER, Y = _POINTS_LOAD_BUFFER))
+        weather_buffer = points_load_buffer(weather_source)
+        weather_area = Extents.buffer(area, (X = weather_buffer, Y = weather_buffer))
         weather_native = _resolve_weather(data, weather_source, weather_area, years)
         # Slice to the requested date range before per-point extraction —
         # positional Ti indexing works for both integer and DateTime Ti axes.

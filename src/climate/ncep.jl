@@ -4,6 +4,10 @@ weather_calendar(::Type{<:NCEP{<:SurfaceFlux}}) = Daily()
 loader(::Type{<:NCEP{<:SurfaceFlux}}) = YearlyTimeSeries()
 native_timestep(T::Type{<:NCEP{<:SurfaceFlux}}) = SixHourly()
 
+# Files are named e.g. `air.2m.gauss.2000.nc` and hold the variable `air`.
+file_variable(T::Type{<:NCEP}, name::Symbol) =
+    Symbol(first(split(RasterDataSources._filename_part(T, name), '.')))
+
 function variables(::Type{<:NCEP{<:SurfaceFlux}})
     (
         Variable(Reference(Temperature()), :air_2m, u"K"),

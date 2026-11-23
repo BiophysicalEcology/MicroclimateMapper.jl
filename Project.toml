@@ -38,6 +38,7 @@ UnitfulMoles = "999f2bd7-36bf-5ba7-9bc1-c9473aa75374"
 
 [weakdeps]
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
 
 [sources]
 BiologicalScaling = {rev = "main", url = "https://github.com/BiophysicalEcology/BiologicalScaling.jl"}
@@ -46,12 +47,17 @@ FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/Fl
 HeatExchange = {rev = "main", url = "https://github.com/BiophysicalEcology/HeatExchange.jl"}
 Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
 PointDataSources = {rev = "main", url = "https://github.com/BiophysicalEcology/PointDataSources.jl"}
-RasterDataSources = {rev = "barra-soilgrids", url = "https://github.com/mrke/RasterDataSources.jl"}
+RasterDataSources = {rev = "master", url = "https://github.com/EcoJulia/RasterDataSources.jl"}
 Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}
 SolarRadiation = {rev = "main", url = "https://github.com/BiophysicalEcology/SolarRadiation.jl"}
+# HTTP headers for ECMWF's ARCO stores are not released yet
+Zarr = {rev = "main", subdir = "Zarr", url = "https://github.com/JuliaIO/Zarr.jl"}
+ZarrCore = {rev = "main", subdir = "ZarrCore", url = "https://github.com/JuliaIO/Zarr.jl"}
+ZarrHTTP = {rev = "main", subdir = "ZarrHTTP", url = "https://github.com/JuliaIO/Zarr.jl"}
 
 [extensions]
 MicroclimateMapperMakieExt = "Makie"
+MicroclimateMapperZarrExt = "Zarr"
 
 [compat]
 Aqua = "0.8"
@@ -89,6 +95,9 @@ Test = "1"
 URIs = "1"
 Unitful = "1"
 UnitfulMoles = "0.1"
+Zarr = "0.11.2"
+ZarrCore = "0.11.2"
+ZarrHTTP = "0.11.1"
 julia = "1"
 
 [extras]
@@ -98,6 +107,9 @@ DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 SafeTestsets = "1bc83da4-3b8d-516f-aca4-4fe02f6d838f"
 Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+Zarr = "0a941bbe-ad1d-11e8-39d9-ab76183a1d99"
+ZarrCore = "77f5b75c-4c08-499f-ba13-550b0a0af171"
+ZarrHTTP = "904a97b2-8abf-4ac8-b211-6540db5c2c8c"
 
 [targets]
-test = ["Aqua", "CSV", "DataFrames", "SafeTestsets", "Tables", "Test"]
+test = ["Aqua", "CSV", "DataFrames", "SafeTestsets", "Tables", "Test", "Zarr", "ZarrCore", "ZarrHTTP"]

@@ -11,7 +11,7 @@ texture_variables(::Type{SLGA}) = (
 
 function _load_soil_texture_native(::Type{SLGA}, area::Extent; component = "EV")
     vars = texture_variables(SLGA)
-    depth_bins = collect(depths(SLGA))  # getraster's depth::AbstractArray dispatch needs a Vector, not a Tuple
+    depth_bins = collect(RasterDataSources.depths(SLGA))  # getraster's depth::AbstractArray dispatch needs a Vector, not a Tuple
     values = map(vars) do var
         paths = getraster(SLGA, native_field(var); depth = depth_bins, component)
         _texture_values_from_paths(paths, area, var)

@@ -7,4 +7,5 @@ using Test
     @testset "micro raster"   begin include("micro_raster.jl") end
     @testset "micro vector"   begin include("micro_vector.jl") end
     @testset "soil pedotransfer" begin include("soil_pedotransfer.jl") end
+    @testset "RasterDataSources sources" begin include("rds_sources.jl") end
 end
