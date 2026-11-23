@@ -15,7 +15,7 @@ include(joinpath(@__DIR__, "..", "plotting.jl"))
 ```julia
 using MicroclimateMapper
 using Microclimate
-using Microclimate: example_soil_profile,
+using Microclimate: example_site, example_soil_profile,
     example_soil_properties_model, example_soil_hydraulic_model
 using RasterDataSources
 using Rasters
@@ -32,11 +32,14 @@ area  = Extent(X = (3.554, 3.608), Y = (44.095, 44.149))
 dates = Date(2000, 7, 1):Day(1):Date(2000, 7, 7)
 
 micro_model = MicroModel(;
-    depths,
-    heights,
-    soil_properties_model = example_soil_properties_model(),
-    soil_hydraulic_model  = example_soil_hydraulic_model(),
-    snow_model            = NoSnow(),
+    site = example_site(),  # replaced at each pixel from terrain
+    soil = SoilModel(;
+        depths,
+        profile          = example_soil_profile(depths),
+        properties_model = example_soil_properties_model(),
+        hydraulic_model  = example_soil_hydraulic_model(),
+    ),
+    atmosphere = AtmosphereModel(; heights),
 )
 
 map_model = MicroMapModel(;
@@ -51,8 +54,7 @@ problem = MicroRasterProblem(;
     model        = map_model,
     area,
     dates,
-    template     = SRTM,
-    soil_profile = example_soil_profile(depths),
+    template = SRTM,
 )
 
 output = solve(problem)

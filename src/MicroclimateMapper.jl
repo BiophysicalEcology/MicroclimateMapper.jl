@@ -4,7 +4,7 @@ using Dates
 using Downloads
 using Statistics: mean
 
-using JSON3
+using JSON
 using URIs
 using Unitful
 

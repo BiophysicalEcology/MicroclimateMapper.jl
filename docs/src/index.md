@@ -19,7 +19,7 @@ Both share a [`MicroMapModel`](@ref) that wraps an inner Microclimate
 
 ```julia
 using MicroclimateMapper
-using Microclimate: example_microclimate_problem, example_soil_profile
+using Microclimate: example_microclimate_problem
 using Dates
 
 micro_model = example_microclimate_problem().model
@@ -30,9 +30,8 @@ model = MicroMapModel(micro_model;
 )
 
 problem = MicroVectorProblem(model;
-    points       = [(3.581, 44.122)],          # (lon, lat)
-    dates        = Date(2000, 6, 1):Day(1):Date(2000, 6, 7),
-    soil_profile = example_soil_profile(inner.depths),
+    points = [(3.581, 44.122)],          # (lon, lat)
+    dates  = Date(2000, 6, 1):Day(1):Date(2000, 6, 7),
 )
 
 output = solve(problem)

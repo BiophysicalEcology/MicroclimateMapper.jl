@@ -4,9 +4,11 @@ using MicroclimateMapper
 using MicroclimateMapper: _make_points_dim, _points_extent,
     _to_points, _to_points_constant, _to_points_with_time,
     _stack_to_points, _extract_lazy_at_points,
-    _daily_to_hourly_midnight_points, _static_to_ti_points
+    _daily_to_hourly_midnight_points, _static_to_ti_points,
+    _point_model, _check_point_models
 using NCDatasets
-using Microclimate: example_microclimate_problem, example_soil_profile
+using Microclimate: example_microclimate_problem
+using Microclimate.ConstructionBase: setproperties
 using RasterDataSources
 using Rasters
 using Rasters: X, Y, Ti, Near
@@ -173,26 +175,36 @@ end
         weather_source = TerraClimate{Historical},
     )
     dates = Date(2000, 1, 1):Day(1):Date(2000, 12, 31)
-    soil_profile = example_soil_profile(inner.depths)
 
-    problem = MicroVectorProblem(; model, points = POINTS, dates, soil_profile)
+    problem = MicroVectorProblem(; model, points = POINTS, dates)
     @test problem.model === model
     @test problem.points === POINTS
     @test problem.dates === dates
-    @test problem.soil_profile === soil_profile
     @test problem.init === nothing
     @test problem.data === (;)
 
     # Single-day run
     problem_day = MicroVectorProblem(;
-        model, points = POINTS, dates = Date(2000, 6, 29), soil_profile)
+        model, points = POINTS, dates = Date(2000, 6, 29))
     @test problem_day.dates === Date(2000, 6, 29)
 
     problem2 = MicroVectorProblem(;
-        model, points = POINTS, dates, soil_profile,
+        model, points = POINTS, dates,
         init = (soil_temperature = nothing, soil_moisture = fill(0.1, 10)),
         data = (; vapour_pressure_deficit = Raster(zeros(2, 2), (X(1:2), Y(1:2)))),
     )
     @test problem2.init.soil_moisture == fill(0.1, 10)
     @test haskey(problem2.data, :vapour_pressure_deficit)
+end
+
+@testset "per-point models" begin
+    inner = example_microclimate_problem().model
+    profile = inner.soil.profile
+    models = [setproperties(inner, (; soil = setproperties(inner.soil, (; profile = setproperties(profile, (; bulk_density = f * profile.bulk_density))))))
+              for f in (0.9, 1.0, 1.1)]
+    @test _point_model(models, (Dim{:point}(2),)) === models[2]
+    @test _point_model(inner, (Dim{:point}(2),)) === inner
+    @test _check_point_models(models, length(POINTS)) === nothing
+    @test_throws ArgumentError _check_point_models(models[1:2], length(POINTS))
+    @test_throws ArgumentError _check_point_models(Any[models...], length(POINTS))
 end
