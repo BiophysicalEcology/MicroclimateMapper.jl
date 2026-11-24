@@ -42,9 +42,9 @@ Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 [sources]
 BiologicalScaling = {rev = "main", url = "https://github.com/BiophysicalEcology/BiologicalScaling.jl"}
 BiophysicalGeometry = {rev = "main", url = "https://github.com/BiophysicalEcology/BiophysicalGeometry.jl"}
-FluidProperties = {rev = "goff-gratch-continuous", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
-HeatExchange = {rev = "evaporation-vapour-density", url = "https://github.com/BiophysicalEcology/HeatExchange.jl"}
-Microclimate = {rev = "canopy-overshoot", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
+FluidProperties = {rev = "main", url = "https://github.com/BiophysicalEcology/FluidProperties.jl"}
+HeatExchange = {rev = "main", url = "https://github.com/BiophysicalEcology/HeatExchange.jl"}
+Microclimate = {rev = "main", url = "https://github.com/BiophysicalEcology/Microclimate.jl"}
 PointDataSources = {rev = "main", url = "https://github.com/BiophysicalEcology/PointDataSources.jl"}
 RasterDataSources = {rev = "barra-soilgrids", url = "https://github.com/mrke/RasterDataSources.jl"}
 Rasters = {rev = "rasterdatasources-0.8-compat", url = "https://github.com/mrke/Rasters.jl"}
