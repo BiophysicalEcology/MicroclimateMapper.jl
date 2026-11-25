@@ -957,9 +957,9 @@ function _environment_daily(n, rainfall, deep_soil_temperature)
         cloud_emissivity = fill(0.95, n),
         rainfall, deep_soil_temperature,
         leaf_area_index = fill(0.1, n),
-        # Ground albedo and roughness height: filled per pixel by `build_problem`
+        # Ground albedo and roughness length: filled per pixel by `build_problem`
         albedo = zeros(Float64, n),
-        roughness_height = zeros(typeof(0.0u"m"), n),
+        ground_roughness_length = zeros(typeof(0.0u"m"), n),
     )
 end
 

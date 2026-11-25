@@ -445,7 +445,7 @@ function _build_problem_and_pool(;
             wind_reference_height = maximum(point_model.atmosphere.heights),
             target_timestep)
         fill!(env.environment_daily.albedo, albedo_grid[I...])
-        fill!(env.environment_daily.roughness_height, roughness_grid[I...])
+        fill!(env.environment_daily.ground_roughness_length, roughness_grid[I...])
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
             soil_moisture_available, point_model.soil.depths,
