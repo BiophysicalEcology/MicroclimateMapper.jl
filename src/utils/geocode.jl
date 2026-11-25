@@ -32,7 +32,7 @@ field) or any `Extents.Extent` directly.
 ```julia
 site     = geocode("Alice Springs, Australia"; buffer = 0.1)
 template = load_template(SRTM, site)
-prob     = MicroRasterProblem(model; area = site.extent, template, dates, soil_profile)
+prob     = MicroRasterProblem(model; area = site.extent, template, dates)
 ```
 """
 load_template(source, site::GeocodeResult) = load_template(source, site.extent)
@@ -58,12 +58,12 @@ with `MicroRasterProblem`.
 ```julia
 # Vector run — single point
 site = geocode("Alice Springs, Australia")
-prob = MicroVectorProblem(model; points = [site], dates, soil_profile)
+prob = MicroVectorProblem(model; points = [site], dates)
 
 # Raster run — natural bbox + 0.1° buffer
 site     = geocode("Alice Springs, Australia"; buffer = 0.1)
 template = load_template(SRTM, site)
-prob     = MicroRasterProblem(model; area = site.extent, template, dates, soil_profile)
+prob     = MicroRasterProblem(model; area = site.extent, template, dates)
 ```
 """
 function geocode(place_name::AbstractString; buffer::Real = 0.0)
@@ -76,20 +76,20 @@ function geocode(place_name::AbstractString; buffer::Real = 0.0)
                        headers = ["User-Agent" => "MicroclimateMapper/0.1"])
 
     seekstart(buf)
-    results = JSON3.read(buf)
+    results = JSON.parse(buf)
 
     isempty(results) && error("No geocoding result for \"$place_name\"")
 
     r  = first(results)
-    bb = r.boundingbox  # [south_lat, north_lat, west_lon, east_lon]
+    bb = r["boundingbox"]  # [south_lat, north_lat, west_lon, east_lon]
 
     extent = Extent(
         X = (parse(Float64, bb[3]) - buffer, parse(Float64, bb[4]) + buffer),
         Y = (parse(Float64, bb[1]) - buffer, parse(Float64, bb[2]) + buffer),
     )
 
-    result = GeocodeResult(parse(Float64, r.lon), parse(Float64, r.lat),
-                           String(r.display_name), extent)
+    result = GeocodeResult(parse(Float64, r["lon"]), parse(Float64, r["lat"]),
+                           String(r["display_name"]), extent)
 
     @info "Matched: $(result.display_name)"
     return result

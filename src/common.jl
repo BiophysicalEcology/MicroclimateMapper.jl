@@ -13,8 +13,8 @@
 #
 # The mode-specific `init` methods load and spatially-extract their forcings
 # (weather, terrain, albedo, roughness, canonical overrides) into matching
-# `Raster` shapes, then hand off to the shared `_build_inputs_and_pool`
-# factory which produces the per-pixel `build_inputs` closure and worker pool
+# `Raster` shapes, then hand off to the shared `_build_problem_and_pool`
+# factory which produces the per-pixel `build_problem` closure and worker pool
 # used by `solve!`.
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ const _DEFAULT_OUTPUT_LAYERS = (
     LayerSpec(:air_temperature, :profile),
     LayerSpec(:relative_humidity, :profile),
     LayerSpec(:wind_speed, :profile),
-    LayerSpec(:surface_water, :scalar),
+    LayerSpec(:ground_surface_water, :scalar),
     LayerSpec(:global_radiation, :scalar),
     LayerSpec(:sky_temperature, :scalar),
     LayerSpec(:snow_depth, :scalar),
@@ -63,7 +63,7 @@ canonical_unit(::Val{:air_temperature})   = u"°C"
 canonical_unit(::Val{:sky_temperature})   = u"°C"
 canonical_unit(::Val{:snow_depth})        = u"cm"
 canonical_unit(::Val{:wind_speed})        = u"m/s"
-canonical_unit(::Val{:surface_water})     = u"kg/m^2"
+canonical_unit(::Val{:ground_surface_water}) = u"kg/m^2"
 canonical_unit(::Val{:global_radiation})  = u"W/m^2"
 canonical_unit(::Val{:soil_moisture})     = u"m^3/m^3"
 canonical_unit(::Val{:relative_humidity}) = u"percent"
@@ -100,7 +100,9 @@ Declarative description of a microclimate run. Constant across spatial
 extents and time ranges — pair with a `MicroRasterProblem` (grid) or
 `MicroVectorProblem` (points) to actually run.
 
-- `micro_model::MicroModel` — inner per-pixel physics model
+- `micro_model` — inner per-pixel physics model: one `MicroModel`, or (points
+  mode only) a vector of them, one per point, sharing one model structure.
+  Each pixel's `site` is set from terrain.
 - `dem_source` — DEM data-source type (e.g. `SRTM`)
 - `weather_source` — weather data-source type (e.g. `TerraClimate{Historical}`)
 - `landcover_source` — optional land-cover data-source type
@@ -161,7 +163,7 @@ mutable struct MicroMapCache{P,W,T,A,R,CO,M,POOL,SC,CC}
     canonical_overrides::CO          # NamedTuple of pre-extracted Rasters
     mask::M                          # nothing, or a 2-D Bool Raster (X, Y)
     cache_pool::POOL                 # Channel{(; micro::MicroCache, scratch)}
-    init_inputs::SC                  # Resolved initial conditions + build_inputs closure
+    init_inputs::SC                  # Resolved initial conditions + build_problem closure
     cloud_constants::CC              # Shared SolarRadiation constants
 end
 
@@ -200,7 +202,7 @@ end
 # Resolve initial conditions. Every key defaults to `nothing`, meaning
 # "fall back to the weather source / data override / inner-solver default"
 # — never fabricated. User-supplied keys override; missing keys are filled
-# from `_DEFAULT_INIT` so the build_inputs closure always sees a complete
+# from `_DEFAULT_INIT` so the build_problem closure always sees a complete
 # NamedTuple.
 const _DEFAULT_INIT = (
     soil_temperature = nothing,
@@ -211,6 +213,24 @@ const _DEFAULT_INIT = (
 )
 _resolve_init(it::NamedTuple, _) = merge(_DEFAULT_INIT, it)
 _resolve_init(::Nothing, _) = _DEFAULT_INIT
+
+# `MicroMapModel.micro_model` is one `MicroModel` for every pixel, or a vector
+# of them, one per point. `_point_model` picks pixel `I`'s; `_reference_model`
+# gives the depths, heights and hours every pixel shares (reinit! checks the
+# sizes match).
+_point_model(micro_model::MicroModel, _) = micro_model
+_point_model(micro_models::AbstractVector{<:MicroModel}, I::Tuple) = micro_models[Rasters.DimensionalData.val(only(I))]
+_reference_model(micro_model::MicroModel) = micro_model
+_reference_model(micro_models::AbstractVector{<:MicroModel}) = first(micro_models)
+
+_check_point_models(::MicroModel, _) = nothing
+function _check_point_models(micro_models::AbstractVector, npoints)
+    length(micro_models) == npoints ||
+        throw(ArgumentError("$(length(micro_models)) models for $npoints points; give one per point"))
+    eltype(micro_models) <: MicroModel && isconcretetype(eltype(micro_models)) ||
+        throw(ArgumentError("per-point models must share one model structure (concrete type); got $(eltype(micro_models))"))
+    return nothing
+end
 
 # Does the run actually have a `:soil_moisture` value to read? True iff
 # the weather source declares it as a canonical variable or the user
@@ -346,19 +366,19 @@ function _build_cloud_constants()
     )
 end
 
-# Build the `build_inputs(scratch, I)` closure and the per-worker cache pool
+# Build the `build_problem(scratch, I)` closure and the per-worker cache pool
 # shared by both grid and points init. All spatial forcings must already be
 # laid out so that `forcing[I...]` works for every `I` from
 # `DimIndices(terrain.elevation)` (i.e. `(X(i), Y(j))` in grid mode and
 # `(Dim{:point}(p),)` in points mode).
-function _build_inputs_and_pool(;
+function _build_problem_and_pool(;
     model, weather_source, weather, terrain, mask,
     albedo_grid, roughness_grid, canonical_overrides,
     init_inputs, soil_moisture_available, years, days, cloud_constants,
-    soil_profile, target_timestep::Timestep = Hourly(),
+    target_timestep::Timestep = Hourly(),
 )
     (; micro_model, lapse_rate_model) = model
-    vapour_pressure_method = micro_model.vapour_pressure_equation
+    reference_model = _reference_model(micro_model)
 
     calendar = weather_calendar(weather_source)
     # Must match `days`, not the full `years` span, or sub-yearly runs
@@ -383,26 +403,28 @@ function _build_inputs_and_pool(;
     if model.solar_only
         @info "model: threads: $(Threads.nthreads())"
         # No ODE needed — pool contains scratch-only workers (no micro field).
-        # build_inputs is never called in _solve_solar_only!.
-        _build_inputs_noop = (scratch, I) -> nothing
+        # build_problem is never called in _solve_solar_only!.
+        _build_problem_noop = (scratch, I) -> nothing
         proto = (; scratch = allocate_scratch())
         cache_pool = Channel{typeof(proto)}(nworkers)
         put!(cache_pool, proto)
         for _ in 2:nworkers
             put!(cache_pool, (; scratch = allocate_scratch()))
         end
-        return (_build_inputs_noop, cache_pool)
+        return (_build_problem_noop, cache_pool)
     end
 
-    wind_tgt = round(ustrip(u"m", maximum(micro_model.heights)); digits = 2)
-    @info "model: snow:            $(nameof(typeof(micro_model.snow_model)))"
+    wind_tgt = round(ustrip(u"m", maximum(reference_model.atmosphere.heights)); digits = 2)
+    @info "model: snow:            $(nameof(typeof(reference_model.snow)))"
     sm_src = model.soil_moisture_source !== nothing ? " ($(model.soil_moisture_source))" : ""
-    @info "model: soil moisture:   $(_soil_moisture_label(micro_model.config.soil_moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
+    @info "model: soil moisture:   $(_soil_moisture_label(reference_model.soil.moisture_strategy, soil_moisture_available, init_inputs))$(sm_src)"
     @info "model: lapse rate:      $(nameof(typeof(lapse_rate_model)))"
     @info "model: wind:            reference height $(wind_tgt) m, power law-corrected from 10 m (source)"
     @info "model: threads:         $(Threads.nthreads())"
 
-    function build_inputs(scratch, I::Tuple)
+    # Pixel `I`'s problem: its model (see `_point_model`) with the site from
+    # terrain, and inputs from the weather at `I`
+    function build_problem(scratch, I::Tuple)
         horizon_angles = terrain.horizon_angles[I...]
         site = Site(;
             elevation = terrain.elevation[I...],
@@ -410,28 +432,29 @@ function _build_inputs_and_pool(;
             aspect = terrain.aspect[I...],
             latitude = terrain.latitude[I...],
             longitude = terrain.longitude[I...],
-            atmospheric_pressure = terrain.atmospheric_pressure[I...],
             horizon_angles,
             sky_view_fraction = _sky_view_from_horizon(horizon_angles),
-            albedo = albedo_grid[I...],
-            roughness_height = roughness_grid[I...],
         )
+        point_model = setproperties(_point_model(micro_model, I), (; site))
         # TODO: why is this hacked in - there are two elevations
         ge = weather_grid_elevation(weather_source, weather, I)
         env = assemble_weather!(scratch, weather, weather_source, site, I;
-            vapour_pressure_method, lapse_rate_model, canonical_overrides,
+            vapour_pressure_method = point_model.vapour_pressure_equation,
+            lapse_rate_model, canonical_overrides,
             grid_elevation = isnothing(ge) ? site.elevation : ge,
-            wind_reference_height = maximum(micro_model.heights),
+            wind_reference_height = maximum(point_model.atmosphere.heights),
             target_timestep)
+        fill!(env.environment_daily.albedo, albedo_grid[I...])
+        fill!(env.environment_daily.ground_roughness_length, roughness_grid[I...])
         initial_soil_moisture = _initial_soil_moisture(
             init_inputs.soil_moisture, scratch.weather.soil_moisture,
-            soil_moisture_available, micro_model.depths,
+            soil_moisture_available, point_model.soil.depths,
         )
         # Snow init: fall back to MicroInputs' own defaults when the user
         # didn't supply a value. `initial_snow_density = nothing` is the
         # MicroInputs default ("use the snow model's snow_density") — pass
         # through unchanged.
-        MicroInputs(; site, soil_profile,
+        inputs = MicroInputs(;
             env.environment_minmax, env.environment_daily, env.environment_hourly,
             initial_soil_temperature = init_inputs.soil_temperature,
             initial_soil_moisture,
@@ -439,6 +462,7 @@ function _build_inputs_and_pool(;
             initial_snow_temperature = something(init_inputs.snow_temperature, u"K"(0.0u"°C")),
             initial_snow_density = init_inputs.snow_density,
         )
+        return MicroProblem(point_model, inputs; days, time_mode)
     end
 
     ci = findfirst(mask)
@@ -447,8 +471,7 @@ function _build_inputs_and_pool(;
     first_I = DimIndices(terrain.elevation)[ci]
     npixels = length(terrain.elevation)
     build_cache() = let scratch = allocate_scratch()
-        (micro = CommonSolve.init(MicroProblem(micro_model, build_inputs(scratch, first_I); days, time_mode)),
-         scratch)
+        (micro = CommonSolve.init(build_problem(scratch, first_I)), scratch)
     end
 
     proto = build_cache()
@@ -458,7 +481,7 @@ function _build_inputs_and_pool(;
         put!(cache_pool, build_cache())
     end
 
-    return (build_inputs, cache_pool)
+    return (build_problem, cache_pool)
 end
 
 # ---------------------------------------------------------------------------
@@ -494,7 +517,7 @@ function CommonSolve.solve!(cache::MicroMapCache)
     proto, first_I, first_result = _solve_proto_pixel!(cache)
     layers = model.output_layers
     try
-        output = _allocate_output(model.micro_model,
+        output = _allocate_output(_reference_model(model.micro_model),
             cache.terrain, first_result, layers,
             cache.init_inputs.anchor_dates, cache.mask)
         _write_output!(output, first_result, layers, first_I)
@@ -549,7 +572,7 @@ function _solve_proto_pixel!(cache)
     proto = take!(cache.cache_pool)
     for I in DimIndices(cache.terrain.elevation)
         mask[I...] || continue
-        reinit!(proto.micro, cache.init_inputs.build_inputs(proto.scratch, I))
+        reinit!(proto.micro, cache.init_inputs.build_problem(proto.scratch, I))
         try
             solve!(proto.micro)
             return proto, I, proto.micro.output
@@ -563,7 +586,7 @@ end
 function _solve_remaining!(output, solar_output, cache, proto, first_I)
     cache_pool = cache.cache_pool
     layers = cache.problem.model.output_layers
-    build_inputs = cache.init_inputs.build_inputs
+    build_problem = cache.init_inputs.build_problem
     mask = cache.mask
     has_solar = solar_output !== nothing
     solar_pairs = cache.init_inputs.solar_pairs
@@ -597,7 +620,7 @@ function _solve_remaining!(output, solar_output, cache, proto, first_I)
             c = take!(cache_pool)
             try
                 for I in work
-                    reinit!(c.micro, build_inputs(c.scratch, I))
+                    reinit!(c.micro, build_problem(c.scratch, I))
                     try
                         solve!(c.micro)
                     catch
@@ -777,8 +800,8 @@ function _allocate_output(model::MicroModel, terrain, proto, layers::Tuple,
     # breaks NetCDF I/O and surprises selectors. Strip both to metres so
     # `depth` and `height` share a single linear axis.
     extra = (
-        soil = (ti, Dim{:depth}(ustrip.(u"m", model.depths))),
-        profile = (ti, Dim{:height}(ustrip.(u"m", model.heights))),
+        soil = (ti, Dim{:depth}(ustrip.(u"m", model.soil.depths))),
+        profile = (ti, Dim{:height}(ustrip.(u"m", model.atmosphere.heights))),
         scalar = (ti,),
     )
     return RasterStack(NamedTuple(map(layers) do spec
